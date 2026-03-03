@@ -1,0 +1,25 @@
+version: "3.9"
+
+services:
+  clawhub:
+    image: craftslab/clawhub:latest
+    ports:
+      - "3000:3000"
+    volumes:
+      # Persist ClawHub storage on the host
+      - ./storage:/storage
+    environment:
+      # Set these to match your Convex deployment and site URLs
+      - VITE_CONVEX_URL=${VITE_CONVEX_URL}
+      - VITE_CONVEX_SITE_URL=${VITE_CONVEX_SITE_URL}
+      - VITE_SOULHUB_SITE_URL=${VITE_SOULHUB_SITE_URL:-https://onlycrabs.ai}
+      - VITE_SOULHUB_HOST=${VITE_SOULHUB_HOST:-onlycrabs.ai}
+      - VITE_SITE_MODE=${VITE_SITE_MODE:-skills}
+      - CONVEX_SITE_URL=${CONVEX_SITE_URL:-${VITE_CONVEX_SITE_URL}}
+      - SITE_URL=${SITE_URL:-http://localhost:3000}
+      # GitHub OAuth + JWT + OpenAI keys must be provided for a real deployment
+      - AUTH_GITHUB_ID=${AUTH_GITHUB_ID}
+      - AUTH_GITHUB_SECRET=${AUTH_GITHUB_SECRET}
+      - JWT_PRIVATE_KEY=${JWT_PRIVATE_KEY}
+      - JWKS=${JWKS}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
