@@ -8,8 +8,10 @@ import {
   MAX_RAW_FILE_BYTES,
   getPathSegments,
   json,
+  parseJsonPayload,
   parseMultipartPublish,
   parsePublishBody,
+  requireApiTokenUserOrResponse,
   resolveTagsBatch,
   safeTextFileResponse,
   softDeleteErrorToResponse,
@@ -45,13 +47,37 @@ type ListSkillsResult = {
       version: string
       createdAt: number
       changelog: string
-      parsed?: { clawdis?: { os?: string[]; nix?: { plugin?: boolean; systems?: string[] } } }
+      parsed?: {
+        license?: 'MIT-0'
+        clawdis?: { os?: string[]; nix?: { plugin?: boolean; systems?: string[] } }
+      }
     } | null
   }>
   nextCursor: string | null
 }
 
 type SkillFile = Doc<'skillVersions'>['files'][number]
+
+type ModerationEvidence = {
+  code: string
+  severity: 'info' | 'warn' | 'critical'
+  file: string
+  line: number
+  message: string
+  evidence: string
+}
+
+type SkillModerationShape = {
+  moderationFlags?: string[]
+  moderationVerdict?: 'clean' | 'suspicious' | 'malicious'
+  moderationReasonCodes?: string[]
+  moderationSummary?: string
+  moderationEngineVersion?: string
+  moderationEvaluatedAt?: number
+  moderationReason?: string
+  moderationEvidence?: ModerationEvidence[]
+  updatedAt?: number
+}
 
 type GetBySlugResult = {
   skill: {
@@ -72,6 +98,11 @@ type GetBySlugResult = {
     isSuspicious: boolean
     isHiddenByMod: boolean
     isRemoved: boolean
+    verdict?: 'clean' | 'suspicious' | 'malicious'
+    reasonCodes?: string[]
+    summary?: string
+    engineVersion?: string
+    updatedAt?: number
     reason?: string
   } | null
 } | null
@@ -92,6 +123,47 @@ type ListVersionsResult = {
     softDeletedAt?: number
   }>
   nextCursor: string | null
+}
+
+function sanitizeEvidence(
+  evidence: ModerationEvidence[],
+  allowSensitiveEvidence: boolean,
+): ModerationEvidence[] {
+  if (allowSensitiveEvidence) return evidence
+  return evidence.map((entry) => ({
+    code: entry.code,
+    severity: entry.severity,
+    file: entry.file,
+    line: entry.line,
+    message: entry.message,
+    evidence: '',
+  }))
+}
+
+function normalizeModerationFromSkill(skill: SkillModerationShape) {
+  const flags = Array.isArray(skill.moderationFlags) ? skill.moderationFlags : []
+  const verdict =
+    skill.moderationVerdict ??
+    (flags.includes('blocked.malware')
+      ? 'malicious'
+      : flags.includes('flagged.suspicious')
+        ? 'suspicious'
+        : 'clean')
+  const isMalwareBlocked = verdict === 'malicious' || flags.includes('blocked.malware')
+  const isSuspicious =
+    !isMalwareBlocked && (verdict === 'suspicious' || flags.includes('flagged.suspicious'))
+
+  return {
+    isMalwareBlocked,
+    isSuspicious,
+    verdict,
+    reasonCodes: Array.isArray(skill.moderationReasonCodes) ? skill.moderationReasonCodes : [],
+    summary: skill.moderationSummary ?? null,
+    engineVersion: skill.moderationEngineVersion ?? null,
+    updatedAt: skill.moderationEvaluatedAt ?? skill.updatedAt ?? null,
+    reason: skill.moderationReason ?? null,
+    evidence: Array.isArray(skill.moderationEvidence) ? skill.moderationEvidence : [],
+  }
 }
 
 export async function searchSkillsV1Handler(ctx: ActionCtx, request: Request) {
@@ -205,6 +277,7 @@ export async function listSkillsV1Handler(ctx: ActionCtx, request: Request) {
           version: item.latestVersion.version,
           createdAt: item.latestVersion.createdAt,
           changelog: item.latestVersion.changelog,
+          license: item.latestVersion.parsed?.license ?? null,
         }
       : null,
     metadata: item.latestVersion?.parsed?.clawdis
@@ -301,6 +374,7 @@ export async function skillsGetRouterV1Handler(ctx: ActionCtx, request: Request)
               version: result.latestVersion.version,
               createdAt: result.latestVersion.createdAt,
               changelog: result.latestVersion.changelog,
+              license: result.latestVersion.parsed?.license ?? null,
             }
           : null,
         metadata: result.latestVersion?.parsed?.clawdis
@@ -321,6 +395,92 @@ export async function skillsGetRouterV1Handler(ctx: ActionCtx, request: Request)
           ? {
               isSuspicious: result.moderationInfo.isSuspicious ?? false,
               isMalwareBlocked: result.moderationInfo.isMalwareBlocked ?? false,
+              verdict: result.moderationInfo.verdict ?? 'clean',
+              reasonCodes: result.moderationInfo.reasonCodes ?? [],
+              summary: result.moderationInfo.summary ?? null,
+              engineVersion: result.moderationInfo.engineVersion ?? null,
+              updatedAt: result.moderationInfo.updatedAt ?? null,
+            }
+          : null,
+      },
+      200,
+      rate.headers,
+    )
+  }
+
+  if (second === 'moderation' && segments.length === 2) {
+    const apiTokenUserId = await getOptionalApiTokenUserId(ctx, request)
+    let isStaff = false
+    if (apiTokenUserId) {
+      const caller = await ctx.runQuery(internal.users.getByIdInternal, { userId: apiTokenUserId })
+      if (caller?.role === 'admin' || caller?.role === 'moderator') {
+        isStaff = true
+      }
+    }
+
+    const hiddenSkill = await ctx.runQuery(internal.skills.getSkillBySlugInternal, { slug })
+    const isOwner = Boolean(apiTokenUserId && hiddenSkill && apiTokenUserId === hiddenSkill.ownerUserId)
+
+    const result = (await ctx.runQuery(api.skills.getBySlug, { slug })) as GetBySlugResult
+    if (!result?.skill) {
+      if (hiddenSkill && (isOwner || isStaff)) {
+        const mod = normalizeModerationFromSkill(hiddenSkill as SkillModerationShape)
+        return json(
+          {
+            moderation: {
+              isSuspicious: mod.isSuspicious,
+              isMalwareBlocked: mod.isMalwareBlocked,
+              verdict: mod.verdict,
+              reasonCodes: mod.reasonCodes,
+              summary: mod.summary,
+              engineVersion: mod.engineVersion,
+              updatedAt: mod.updatedAt,
+              evidence: sanitizeEvidence(mod.evidence, true),
+              legacyReason: mod.reason,
+            },
+          },
+          200,
+          rate.headers,
+        )
+      }
+
+      return text('Moderation details unavailable', 404, rate.headers)
+    }
+
+    const mod = hiddenSkill
+      ? normalizeModerationFromSkill(hiddenSkill as SkillModerationShape)
+      : result.moderationInfo
+        ? {
+            isSuspicious: result.moderationInfo.isSuspicious ?? false,
+            isMalwareBlocked: result.moderationInfo.isMalwareBlocked ?? false,
+            verdict: result.moderationInfo.verdict ?? 'clean',
+            reasonCodes: result.moderationInfo.reasonCodes ?? [],
+            summary: result.moderationInfo.summary ?? null,
+            engineVersion: result.moderationInfo.engineVersion ?? null,
+            updatedAt: result.moderationInfo.updatedAt ?? null,
+            reason: result.moderationInfo.reason ?? null,
+            evidence: [],
+          }
+        : null
+    const isFlagged = Boolean(mod?.isSuspicious || mod?.isMalwareBlocked)
+
+    if (!isOwner && !isStaff && !isFlagged) {
+      return text('Moderation details unavailable', 404, rate.headers)
+    }
+
+    return json(
+      {
+        moderation: mod
+          ? {
+              isSuspicious: mod.isSuspicious,
+              isMalwareBlocked: mod.isMalwareBlocked,
+              verdict: mod.verdict,
+              reasonCodes: mod.reasonCodes,
+              summary: mod.summary,
+              engineVersion: mod.engineVersion,
+              updatedAt: mod.updatedAt,
+              evidence: sanitizeEvidence(mod.evidence, Boolean(isOwner || isStaff)),
+              legacyReason: isOwner || isStaff ? mod.reason : null,
             }
           : null,
       },
@@ -410,6 +570,7 @@ export async function skillsGetRouterV1Handler(ctx: ActionCtx, request: Request)
           createdAt: version.createdAt,
           changelog: version.changelog,
           changelogSource: version.changelogSource ?? null,
+          license: version.parsed?.license ?? null,
           files: version.files.map((file: SkillFile) => ({
             path: file.path,
             size: file.size,
@@ -490,12 +651,18 @@ export async function publishSkillV1Handler(ctx: ActionCtx, request: Request) {
     if (contentType.includes('application/json')) {
       const body = await request.json()
       const payload = parsePublishBody(body)
+      if (payload.acceptLicenseTerms !== true) {
+        return text('MIT-0 license terms must be accepted to publish skills', 400, rate.headers)
+      }
       const result = await publishVersionForUser(ctx, userId, payload)
       return json({ ok: true, ...result }, 200, rate.headers)
     }
 
     if (contentType.includes('multipart/form-data')) {
       const payload = await parseMultipartPublish(ctx, request)
+      if (payload.acceptLicenseTerms !== true) {
+        return text('MIT-0 license terms must be accepted to publish skills', 400, rate.headers)
+      }
       const result = await publishVersionForUser(ctx, userId, payload)
       return json({ ok: true, ...result }, 200, rate.headers)
     }
@@ -507,26 +674,156 @@ export async function publishSkillV1Handler(ctx: ActionCtx, request: Request) {
   return text('Unsupported content type', 415, rate.headers)
 }
 
+type TransferDecisionAction = 'accept' | 'reject' | 'cancel'
+
+function transferErrorToResponse(error: unknown, headers: HeadersInit) {
+  const message = error instanceof Error ? error.message : 'Transfer failed'
+  const lower = message.toLowerCase()
+  if (lower.includes('unauthorized')) return text('Unauthorized', 401, headers)
+  if (lower.includes('forbidden')) return text('Forbidden', 403, headers)
+  if (lower.includes('not found')) return text(message, 404, headers)
+  if (lower.includes('required') || lower.includes('invalid') || lower.includes('pending')) {
+    return text(message, 400, headers)
+  }
+  return text(message, 400, headers)
+}
+
+async function resolveTransferContext(
+  ctx: ActionCtx,
+  request: Request,
+  slug: string,
+  headers: HeadersInit,
+): Promise<
+  | { ok: true; userId: Id<'users'>; skill: Doc<'skills'> }
+  | { ok: false; response: Response }
+> {
+  const auth = await requireApiTokenUserOrResponse(ctx, request, headers)
+  if (!auth.ok) return auth
+
+  const skill = await ctx.runQuery(internal.skills.getSkillBySlugInternal, { slug })
+  if (!skill || skill.softDeletedAt) return { ok: false, response: text('Skill not found', 404, headers) }
+
+  return { ok: true, userId: auth.userId, skill }
+}
+
+async function handleTransferRequest(
+  ctx: ActionCtx,
+  request: Request,
+  slug: string,
+  headers: HeadersInit,
+) {
+  const transferContext = await resolveTransferContext(ctx, request, slug, headers)
+  if (!transferContext.ok) return transferContext.response
+
+  const parsed = await parseJsonPayload(request, headers)
+  if (!parsed.ok) return parsed.response
+
+  const toUserHandleRaw =
+    typeof parsed.payload.toUserHandle === 'string' ? parsed.payload.toUserHandle.trim() : ''
+  if (!toUserHandleRaw) return text('toUserHandle required', 400, headers)
+  const message = typeof parsed.payload.message === 'string' ? parsed.payload.message : undefined
+
+  try {
+    const result = await ctx.runMutation(internal.skillTransfers.requestTransferInternal, {
+      actorUserId: transferContext.userId,
+      skillId: transferContext.skill._id,
+      toUserHandle: toUserHandleRaw,
+      message,
+    })
+    return json(result, 200, headers)
+  } catch (error) {
+    return transferErrorToResponse(error, headers)
+  }
+}
+
+async function handleTransferDecision(
+  ctx: ActionCtx,
+  request: Request,
+  slug: string,
+  decision: TransferDecisionAction,
+  headers: HeadersInit,
+) {
+  const transferContext = await resolveTransferContext(ctx, request, slug, headers)
+  if (!transferContext.ok) return transferContext.response
+
+  const pendingTransfer =
+    decision === 'cancel'
+      ? await ctx.runQuery(internal.skillTransfers.getPendingTransferBySkillAndFromUserInternal, {
+          skillId: transferContext.skill._id,
+          fromUserId: transferContext.userId,
+        })
+      : await ctx.runQuery(internal.skillTransfers.getPendingTransferBySkillAndUserInternal, {
+          skillId: transferContext.skill._id,
+          toUserId: transferContext.userId,
+        })
+  if (!pendingTransfer) return text('No pending transfer found', 404, headers)
+
+  const mutation =
+    decision === 'accept'
+      ? internal.skillTransfers.acceptTransferInternal
+      : decision === 'reject'
+        ? internal.skillTransfers.rejectTransferInternal
+        : internal.skillTransfers.cancelTransferInternal
+
+  try {
+    const result = await ctx.runMutation(mutation, {
+      actorUserId: transferContext.userId,
+      transferId: pendingTransfer._id,
+    })
+    return json(result, 200, headers)
+  } catch (error) {
+    return transferErrorToResponse(error, headers)
+  }
+}
+
+async function handleSkillsTransferPost(
+  ctx: ActionCtx,
+  request: Request,
+  segments: string[],
+  headers: HeadersInit,
+) {
+  const slug = segments[0]?.trim().toLowerCase() ?? ''
+  if (!slug) return text('Slug required', 400, headers)
+
+  if (segments.length === 2) {
+    return handleTransferRequest(ctx, request, slug, headers)
+  }
+  if (segments.length === 3) {
+    const decision = segments[2]?.trim().toLowerCase()
+    if (decision === 'accept' || decision === 'reject' || decision === 'cancel') {
+      return handleTransferDecision(ctx, request, slug, decision, headers)
+    }
+  }
+  return text('Not found', 404, headers)
+}
+
 export async function skillsPostRouterV1Handler(ctx: ActionCtx, request: Request) {
   const rate = await applyRateLimit(ctx, request, 'write')
   if (!rate.ok) return rate.response
 
   const segments = getPathSegments(request, '/api/v1/skills/')
-  if (segments.length !== 2 || segments[1] !== 'undelete') {
-    return text('Not found', 404, rate.headers)
+  const action = segments[1] ?? ''
+
+  if (segments.length === 2 && action === 'undelete') {
+    const slug = segments[0]?.trim().toLowerCase() ?? ''
+    try {
+      const { userId } = await requireApiTokenUser(ctx, request)
+      await ctx.runMutation(internal.skills.setSkillSoftDeletedInternal, {
+        userId,
+        slug,
+        deleted: false,
+      })
+      return json({ ok: true }, 200, rate.headers)
+    } catch (error) {
+      return softDeleteErrorToResponse('skill', error, rate.headers)
+    }
   }
-  const slug = segments[0]?.trim().toLowerCase() ?? ''
-  try {
-    const { userId } = await requireApiTokenUser(ctx, request)
-    await ctx.runMutation(internal.skills.setSkillSoftDeletedInternal, {
-      userId,
-      slug,
-      deleted: false,
-    })
-    return json({ ok: true }, 200, rate.headers)
-  } catch (error) {
-    return softDeleteErrorToResponse('skill', error, rate.headers)
+
+  if (action === 'transfer') {
+    return handleSkillsTransferPost(ctx, request, segments, rate.headers)
   }
+
+  return text('Not found', 404, rate.headers)
 }
 
 export async function skillsDeleteRouterV1Handler(ctx: ActionCtx, request: Request) {

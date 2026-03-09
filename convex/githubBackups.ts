@@ -32,6 +32,7 @@ type BackupPageResult = {
 
 type BackupSyncState = {
   cursor: string | null
+  pruneCursor: string | null
 }
 
 export type SyncGitHubBackupsResult = {
@@ -45,6 +46,7 @@ export type SyncGitHubBackupsResult = {
     errors: number
   }
   cursor: string | null
+  pruneCursor: string | null
   isDone: boolean
 }
 
@@ -62,7 +64,7 @@ export const getGitHubBackupPageInternal = internalQuery({
 
     const items: BackupPageItem[] = []
     for (const skill of page) {
-      if (skill.softDeletedAt) continue
+      if (!isPubliclyAvailableSkill(skill)) continue
       if (!skill.latestVersionId) {
         items.push({ kind: 'missingLatestVersion', skillId: skill._id })
         continue
@@ -101,6 +103,11 @@ export const getGitHubBackupPageInternal = internalQuery({
   },
 })
 
+function isPubliclyAvailableSkill(skill: { softDeletedAt?: number; moderationStatus?: string | null }) {
+  if (skill.softDeletedAt) return false
+  return skill.moderationStatus === undefined || skill.moderationStatus === null || skill.moderationStatus === 'active'
+}
+
 export const getGitHubBackupSyncStateInternal = internalQuery({
   args: {},
   handler: async (ctx): Promise<BackupSyncState> => {
@@ -108,13 +115,14 @@ export const getGitHubBackupSyncStateInternal = internalQuery({
       .query('githubBackupSyncState')
       .withIndex('by_key', (q) => q.eq('key', SYNC_STATE_KEY))
       .unique()
-    return { cursor: state?.cursor ?? null }
+    return { cursor: state?.cursor ?? null, pruneCursor: state?.pruneCursor ?? null }
   },
 })
 
 export const setGitHubBackupSyncStateInternal = internalMutation({
   args: {
     cursor: v.optional(v.string()),
+    pruneCursor: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const now = Date.now()
@@ -127,6 +135,7 @@ export const setGitHubBackupSyncStateInternal = internalMutation({
       await ctx.db.insert('githubBackupSyncState', {
         key: SYNC_STATE_KEY,
         cursor: args.cursor,
+        pruneCursor: args.pruneCursor,
         updatedAt: now,
       })
       return { ok: true as const }
@@ -134,6 +143,7 @@ export const setGitHubBackupSyncStateInternal = internalMutation({
 
     await ctx.db.patch(state._id, {
       cursor: args.cursor,
+      pruneCursor: args.pruneCursor,
       updatedAt: now,
     })
 
@@ -146,6 +156,7 @@ export const syncGitHubBackups: ReturnType<typeof action> = action({
     dryRun: v.optional(v.boolean()),
     batchSize: v.optional(v.number()),
     maxBatches: v.optional(v.number()),
+    pruneBatchSize: v.optional(v.number()),
     resetCursor: v.optional(v.boolean()),
   },
   handler: async (ctx, args): Promise<SyncGitHubBackupsResult> => {
@@ -155,6 +166,7 @@ export const syncGitHubBackups: ReturnType<typeof action> = action({
     if (args.resetCursor && !args.dryRun) {
       await ctx.runMutation(internal.githubBackups.setGitHubBackupSyncStateInternal, {
         cursor: undefined,
+        pruneCursor: undefined,
       })
     }
 
@@ -162,6 +174,7 @@ export const syncGitHubBackups: ReturnType<typeof action> = action({
       dryRun: args.dryRun,
       batchSize: args.batchSize,
       maxBatches: args.maxBatches,
+      pruneBatchSize: args.pruneBatchSize,
     }) as Promise<SyncGitHubBackupsResult>
   },
 })

@@ -19,6 +19,8 @@ const DEFAULT_BATCH_SIZE = 50
 const MAX_BATCH_SIZE = 200
 const DEFAULT_MAX_BATCHES = 5
 const MAX_MAX_BATCHES = 200
+const DEFAULT_PRUNE_BATCH_SIZE = 10
+const MAX_PRUNE_BATCH_SIZE = 100
 
 type BackupPageItem =
   | {
@@ -48,11 +50,13 @@ export type SyncGitHubBackupsInternalArgs = {
   dryRun?: boolean
   batchSize?: number
   maxBatches?: number
+  pruneBatchSize?: number
 }
 
 export type SyncGitHubBackupsInternalResult = {
   stats: GitHubBackupSyncStats
   cursor: string | null
+  pruneCursor: string | null
   isDone: boolean
 }
 
@@ -98,20 +102,27 @@ export async function syncGitHubBackupsInternalHandler(
   }
 
   if (!isGitHubBackupConfigured()) {
-    return { stats, cursor: null, isDone: true }
+    return { stats, cursor: null, pruneCursor: null, isDone: true }
   }
 
   const batchSize = clampInt(args.batchSize ?? DEFAULT_BATCH_SIZE, 1, MAX_BATCH_SIZE)
   const maxBatches = clampInt(args.maxBatches ?? DEFAULT_MAX_BATCHES, 1, MAX_MAX_BATCHES)
+  const pruneBatchSize = clampInt(
+    args.pruneBatchSize ?? DEFAULT_PRUNE_BATCH_SIZE,
+    1,
+    MAX_PRUNE_BATCH_SIZE,
+  )
   const context = await getGitHubBackupContext()
 
   const state = dryRun
-    ? { cursor: null as string | null }
+    ? { cursor: null as string | null, pruneCursor: null as string | null }
     : ((await ctx.runQuery(internal.githubBackups.getGitHubBackupSyncStateInternal, {})) as {
         cursor: string | null
+        pruneCursor: string | null
       })
 
   let cursor: string | null = state.cursor
+  let pruneCursor: string | null = state.pruneCursor
   let isDone = false
 
   for (let batch = 0; batch < maxBatches; batch++) {
@@ -165,15 +176,23 @@ export async function syncGitHubBackupsInternalHandler(
     if (!dryRun) {
       await ctx.runMutation(internal.githubBackups.setGitHubBackupSyncStateInternal, {
         cursor: isDone ? undefined : (cursor ?? undefined),
+        pruneCursor: pruneCursor ?? undefined,
       })
     }
 
     if (isDone) break
   }
 
-  await pruneDeletedSkillBackups(ctx, context, dryRun, stats)
+  pruneCursor = await pruneDeletedSkillBackups(ctx, context, dryRun, stats, pruneCursor, pruneBatchSize)
 
-  return { stats, cursor, isDone }
+  if (!dryRun) {
+    await ctx.runMutation(internal.githubBackups.setGitHubBackupSyncStateInternal, {
+      cursor: isDone ? undefined : (cursor ?? undefined),
+      pruneCursor: pruneCursor ?? undefined,
+    })
+  }
+
+  return { stats, cursor, pruneCursor, isDone }
 }
 
 async function pruneDeletedSkillBackups(
@@ -181,22 +200,38 @@ async function pruneDeletedSkillBackups(
   context: Awaited<ReturnType<typeof getGitHubBackupContext>>,
   dryRun: boolean,
   stats: GitHubBackupSyncStats,
-) {
+  pruneCursor: string | null,
+  pruneBatchSize: number,
+): Promise<string | null> {
   let entries: Awaited<ReturnType<typeof listGitHubSkillBackupEntries>>
   try {
     entries = await listGitHubSkillBackupEntries(context)
   } catch (error) {
     console.error('GitHub backup cleanup list failed', error)
     stats.errors += 1
-    return
+    return pruneCursor
   }
 
-  for (const entry of entries) {
+  if (!entries.length) return null
+
+  const sortedEntries = [...entries].sort((a, b) => a.rootPath.localeCompare(b.rootPath))
+  const startIndex =
+    pruneCursor == null
+      ? 0
+      : sortedEntries.findIndex((entry) => entry.rootPath.localeCompare(pruneCursor) > 0)
+
+  if (startIndex === -1) return null
+  const chunk = sortedEntries.slice(startIndex, startIndex + pruneBatchSize)
+  if (!chunk.length) return null
+
+  let lastProcessed = pruneCursor
+  for (const entry of chunk) {
+    lastProcessed = entry.rootPath
     try {
       const skill = (await ctx.runQuery(internal.skills.getSkillBySlugInternal, {
         slug: entry.slug,
       })) as Doc<'skills'> | null
-      if (!skill || skill.softDeletedAt) {
+      if (!isMirrorEligibleSkill(skill)) {
         await deleteBackupIfNeeded(context, entry, dryRun, stats)
         continue
       }
@@ -218,6 +253,14 @@ async function pruneDeletedSkillBackups(
       stats.errors += 1
     }
   }
+
+  const reachedEnd = startIndex + chunk.length >= sortedEntries.length
+  return reachedEnd ? null : (lastProcessed ?? null)
+}
+
+function isMirrorEligibleSkill(skill: Doc<'skills'> | null): skill is Doc<'skills'> {
+  if (!skill || skill.softDeletedAt) return false
+  return skill.moderationStatus === undefined || skill.moderationStatus === null || skill.moderationStatus === 'active'
 }
 
 async function deleteBackupIfNeeded(
@@ -239,8 +282,28 @@ export const syncGitHubBackupsInternal = internalAction({
     dryRun: v.optional(v.boolean()),
     batchSize: v.optional(v.number()),
     maxBatches: v.optional(v.number()),
+    pruneBatchSize: v.optional(v.number()),
   },
   handler: syncGitHubBackupsInternalHandler,
+})
+
+export const deleteGitHubBackupForSlugInternal = internalAction({
+  args: {
+    ownerHandle: v.string(),
+    slug: v.string(),
+    dryRun: v.optional(v.boolean()),
+  },
+  handler: async (_ctx, args) => {
+    if (!isGitHubBackupConfigured()) {
+      return { skipped: true as const, deleted: false as const }
+    }
+    if (args.dryRun) {
+      return { skipped: false as const, deleted: true as const, dryRun: true as const }
+    }
+    const context = await getGitHubBackupContext()
+    const result = await deleteGitHubSkillBackup(context, args.ownerHandle, args.slug)
+    return { skipped: false as const, ...result }
+  },
 })
 
 function clampInt(value: number, min: number, max: number) {

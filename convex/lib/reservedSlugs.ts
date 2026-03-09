@@ -1,9 +1,17 @@
+import { ConvexError } from 'convex/values'
 import type { Doc, Id } from '../_generated/dataModel'
 import type { MutationCtx, QueryCtx } from '../_generated/server'
 
 type ReservedSlug = Doc<'reservedSlugs'>
 
 const DEFAULT_ACTIVE_LIMIT = 25
+
+export function formatReservedSlugCooldownMessage(slug: string, expiresAt: number) {
+  return (
+    `Slug "${slug}" is reserved for its previous owner until ${new Date(expiresAt).toISOString()}. ` +
+    'Please choose a different slug.'
+  )
+}
 
 function reservedSlugQuery(ctx: QueryCtx | MutationCtx, slug: string) {
   return ctx.db
@@ -116,13 +124,9 @@ export async function enforceReservedSlugCooldownForNewSkill(
   if (!latest) return
 
   if (latest.expiresAt > params.now && latest.originalOwnerUserId !== params.userId) {
-    throw new Error(
-      `Slug "${params.slug}" is reserved for its previous owner until ${new Date(latest.expiresAt).toISOString()}. ` +
-        'Please choose a different slug.',
-    )
+    throw new ConvexError(formatReservedSlugCooldownMessage(params.slug, latest.expiresAt))
   }
 
   await ctx.db.patch(latest._id, { releasedAt: params.now })
   await releaseDuplicateActiveReservations(ctx, active, latest._id, params.now)
 }
-

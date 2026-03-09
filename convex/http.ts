@@ -28,6 +28,7 @@ import {
   soulsPostRouterV1Http,
   starsDeleteRouterV1Http,
   starsPostRouterV1Http,
+  transfersGetRouterV1Http,
   usersListV1Http,
   usersPostRouterV1Http,
   whoamiV1Http,
@@ -96,6 +97,12 @@ http.route({
   pathPrefix: `${ApiRoutes.stars}/`,
   method: 'DELETE',
   handler: starsDeleteRouterV1Http,
+})
+
+http.route({
+  pathPrefix: `${ApiRoutes.transfers}/`,
+  method: 'GET',
+  handler: transfersGetRouterV1Http,
 })
 
 http.route({

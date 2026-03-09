@@ -62,6 +62,7 @@ Public read:
 - `GET /api/v1/skills?limit=&cursor=&sort=`
   - `sort`: `updated` (default), `downloads`, `stars` (`rating`), `installsCurrent` (`installs`), `installsAllTime`, `trending`
 - `GET /api/v1/skills/{slug}`
+- `GET /api/v1/skills/{slug}/moderation`
 - `GET /api/v1/skills/{slug}/versions?limit=&cursor=`
 - `GET /api/v1/skills/{slug}/versions/{version}`
 - `GET /api/v1/skills/{slug}/file?path=&version=&tag=`
@@ -73,6 +74,12 @@ Auth required:
 - `POST /api/v1/skills` (publish, multipart preferred)
 - `DELETE /api/v1/skills/{slug}`
 - `POST /api/v1/skills/{slug}/undelete`
+- `POST /api/v1/skills/{slug}/transfer`
+- `POST /api/v1/skills/{slug}/transfer/accept`
+- `POST /api/v1/skills/{slug}/transfer/reject`
+- `POST /api/v1/skills/{slug}/transfer/cancel`
+- `GET /api/v1/transfers/incoming`
+- `GET /api/v1/transfers/outgoing`
 - `GET /api/v1/whoami`
 
 ## Legacy

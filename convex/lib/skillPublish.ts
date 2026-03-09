@@ -7,6 +7,7 @@ import { getSkillBadgeMap, isSkillHighlighted } from './badges'
 import { generateChangelogForPublish } from './changelog'
 import { generateEmbedding } from './embeddings'
 import { requireGitHubAccountAge } from './githubAccount'
+import { runStaticModerationScan } from './moderationEngine'
 import type { PublicUser } from './public'
 import {
   computeQualitySignals,
@@ -33,6 +34,7 @@ const MAX_TOTAL_BYTES = 50 * 1024 * 1024
 const MAX_FILES_FOR_EMBEDDING = 40
 const QUALITY_WINDOW_MS = 24 * 60 * 60 * 1000
 const QUALITY_ACTIVITY_LIMIT = 60
+const PLATFORM_SKILL_LICENSE = 'MIT-0' as const
 
 export type PublishResult = {
   skillId: Id<'skills'>
@@ -205,14 +207,29 @@ export async function publishVersionForUser(
 
   const metadata = mergeSourceIntoMetadata(frontmatterMetadata, args.source, qualityAssessment)
 
-  const otherFiles = [] as Array<{ path: string; content: string }>
+  const fileContents: Array<{ path: string; content: string }> = [
+    { path: readmeFile.path, content: readmeText },
+  ]
   for (const file of publishFiles) {
-    if (!file.path || file.path.toLowerCase().endsWith('.md')) continue
+    if (!file.path || file.storageId === readmeFile.storageId) continue
     if (!isTextFile(file.path, file.contentType ?? undefined)) continue
     const content = await fetchText(ctx, file.storageId)
-    otherFiles.push({ path: file.path, content })
-    if (otherFiles.length >= MAX_FILES_FOR_EMBEDDING) break
+    fileContents.push({ path: file.path, content })
   }
+
+  const otherFiles = fileContents
+    .filter((file) => !file.path.toLowerCase().endsWith('.md'))
+    .slice(0, MAX_FILES_FOR_EMBEDDING)
+
+  const staticScan = runStaticModerationScan({
+    slug,
+    displayName,
+    summary,
+    frontmatter,
+    metadata,
+    files: publishFiles.map((file) => ({ path: file.path, size: file.size })),
+    fileContents,
+  })
 
   const embeddingText = buildEmbeddingText({
     frontmatter,
@@ -268,8 +285,10 @@ export async function publishVersionForUser(
       frontmatter,
       metadata,
       clawdis,
+      license: PLATFORM_SKILL_LICENSE,
     },
     summary,
+    staticScan,
     embedding,
     qualityAssessment: qualityAssessment
       ? {

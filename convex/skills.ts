@@ -27,10 +27,17 @@ import {
   adjustGlobalPublicSkillsCount,
   countPublicSkillsForGlobalStats,
   getPublicSkillVisibilityDelta,
+  isPublicSkillDoc,
   readGlobalPublicSkillsCount,
 } from './lib/globalStats'
 import { buildTrendingLeaderboard } from './lib/leaderboards'
+import { buildModerationSnapshot } from './lib/moderationEngine'
 import { deriveModerationFlags } from './lib/moderation'
+import {
+  legacyFlagsFromVerdict,
+  summarizeReasonCodes,
+  verdictFromCodes,
+} from './lib/moderationReasonCodes'
 import { toPublicSkill, toPublicUser } from './lib/public'
 import {
   AUTO_HIDE_REPORT_THRESHOLD,
@@ -41,6 +48,7 @@ import { embeddingVisibilityFor } from './lib/embeddingVisibility'
 import { scheduleNextBatchIfNeeded } from './lib/batching'
 import {
   enforceReservedSlugCooldownForNewSkill,
+  formatReservedSlugCooldownMessage,
   getLatestActiveReservedSlug,
   listActiveReservedSlugsForSlug,
   reserveSlugForHardDeleteFinalize,
@@ -52,13 +60,14 @@ import {
   publishVersionForUser,
   queueHighlightedWebhook,
 } from './lib/skillPublish'
-import { isSkillSuspicious } from './lib/skillSafety'
+import { computeIsSuspicious, isSkillSuspicious } from './lib/skillSafety'
 import { getFrontmatterValue, hashSkillFiles } from './lib/skills'
 
 export { publishVersionForUser } from './lib/skillPublish'
 
 type ReadmeResult = { path: string; text: string }
 type FileTextResult = { path: string; text: string; size: number; sha256: string }
+const PLATFORM_SKILL_LICENSE = 'MIT-0' as const
 
 const MAX_DIFF_FILE_BYTES = 200 * 1024
 const MAX_LIST_LIMIT = 50
@@ -75,6 +84,57 @@ const RATE_LIMIT_DAY_MS = 24 * RATE_LIMIT_HOUR_MS
 const SLUG_RESERVATION_DAYS = 90
 const SLUG_RESERVATION_MS = SLUG_RESERVATION_DAYS * RATE_LIMIT_DAY_MS
 const LOW_TRUST_ACCOUNT_AGE_MS = 30 * RATE_LIMIT_DAY_MS
+
+function buildStructuredModerationPatch(params: {
+  staticScan?: Doc<'skillVersions'>['staticScan']
+  vtStatus?: string
+  llmStatus?: string
+  sourceVersionId?: Id<'skillVersions'>
+}): Pick<
+  Doc<'skills'>,
+  | 'moderationVerdict'
+  | 'moderationReasonCodes'
+  | 'moderationEvidence'
+  | 'moderationSummary'
+  | 'moderationEngineVersion'
+  | 'moderationEvaluatedAt'
+  | 'moderationSourceVersionId'
+> {
+  const snapshot = buildModerationSnapshot({
+    staticScan: params.staticScan,
+    vtStatus: params.vtStatus,
+    llmStatus: params.llmStatus,
+    sourceVersionId: params.sourceVersionId,
+  })
+
+  return {
+    moderationVerdict: snapshot.verdict,
+    moderationReasonCodes: snapshot.reasonCodes.length ? snapshot.reasonCodes : undefined,
+    moderationEvidence: snapshot.evidence.length ? snapshot.evidence : undefined,
+    moderationSummary: snapshot.summary,
+    moderationEngineVersion: snapshot.engineVersion,
+    moderationEvaluatedAt: snapshot.evaluatedAt,
+    moderationSourceVersionId: params.sourceVersionId,
+  }
+}
+
+async function patchStructuredModerationFromVersion(
+  ctx: MutationCtx,
+  skill: Doc<'skills'>,
+  version: Pick<Doc<'skillVersions'>, '_id' | 'staticScan' | 'vtAnalysis' | 'llmAnalysis'>,
+) {
+  const patch = buildStructuredModerationPatch({
+    staticScan: version.staticScan,
+    vtStatus: version.vtAnalysis?.status,
+    llmStatus: version.llmAnalysis?.status,
+    sourceVersionId: version._id,
+  })
+
+  await ctx.db.patch(skill._id, {
+    ...patch,
+    updatedAt: Date.now(),
+  })
+}
 const TRUSTED_PUBLISHER_SKILL_THRESHOLD = 10
 const LOW_TRUST_BURST_THRESHOLD_PER_HOUR = 8
 const OWNER_ACTIVITY_SCAN_LIMIT = 500
@@ -117,6 +177,20 @@ function stripSuspiciousFlag(flags: string[] | undefined) {
   if (!flags?.length) return undefined
   const next = flags.filter((flag) => flag !== 'flagged.suspicious')
   return next.length ? next : undefined
+}
+
+function buildConflictingSkillUrl(skill: Doc<'skills'>, owner: Doc<'users'> | null | undefined) {
+  if (!owner || owner.deletedAt || owner.deactivatedAt || !isPublicSkillDoc(skill)) return null
+  const ownerParam = owner.handle?.trim() || String(owner._id)
+  if (!ownerParam) return null
+  return `/${encodeURIComponent(ownerParam)}/${encodeURIComponent(skill.slug)}`
+}
+
+function buildSlugTakenErrorMessage(skill: Doc<'skills'>, owner: Doc<'users'> | null | undefined) {
+  const base = 'Slug is already taken. Choose a different slug.'
+  const url = buildConflictingSkillUrl(skill, owner)
+  if (!url) return base
+  return `${base} Existing skill: ${url}`
 }
 
 function normalizeScannerSuspiciousReason(reason: string | undefined) {
@@ -511,6 +585,7 @@ type PublicSkillListVersion = Pick<
   '_id' | '_creationTime' | 'version' | 'createdAt' | 'changelog' | 'changelogSource'
 > & {
   parsed?: {
+    license?: typeof PLATFORM_SKILL_LICENSE
     clawdis?: {
       os?: string[]
       nix?: {
@@ -558,13 +633,19 @@ async function buildPublicSkillEntries(
 
   const entries = await Promise.all(
     skills.map(async (skill) => {
+      // Use denormalized summary when available to avoid reading the full ~6KB version doc
+      const hasSummary = includeVersion && skill.latestVersionSummary
       const [latestVersionDoc, ownerInfo] = await Promise.all([
-        includeVersion && skill.latestVersionId ? ctx.db.get(skill.latestVersionId) : null,
+        includeVersion && !hasSummary && skill.latestVersionId
+          ? ctx.db.get(skill.latestVersionId)
+          : null,
         getOwnerInfo(skill.ownerUserId),
       ])
       const publicSkill = toPublicSkill(skill)
       if (!publicSkill) return null
-      const latestVersion = toPublicSkillListVersion(latestVersionDoc)
+      const latestVersion = hasSummary
+        ? toPublicSkillListVersionFromSummary(skill.latestVersionSummary!, skill.latestVersionId)
+        : toPublicSkillListVersion(latestVersionDoc)
       return {
         skill: publicSkill,
         latestVersion,
@@ -588,7 +669,30 @@ function toPublicSkillListVersion(
     createdAt: version.createdAt,
     changelog: version.changelog,
     changelogSource: version.changelogSource,
-    parsed: version.parsed?.clawdis ? { clawdis: version.parsed.clawdis } : undefined,
+    parsed:
+      version.parsed?.clawdis || version.parsed?.license
+        ? {
+            ...(version.parsed?.license ? { license: version.parsed.license } : {}),
+            ...(version.parsed?.clawdis ? { clawdis: version.parsed.clawdis } : {}),
+          }
+        : undefined,
+  }
+}
+
+function toPublicSkillListVersionFromSummary(
+  summary: NonNullable<Doc<'skills'>['latestVersionSummary']>,
+  latestVersionId: Id<'skillVersions'> | undefined,
+): PublicSkillListVersion | null {
+  if (!latestVersionId) return null
+  return {
+    _id: latestVersionId,
+    // Approximates _creationTime; both are set to `now` in the same transaction
+    _creationTime: summary.createdAt,
+    version: summary.version,
+    createdAt: summary.createdAt,
+    changelog: summary.changelog,
+    changelogSource: summary.changelogSource,
+    parsed: summary.clawdis ? { clawdis: summary.clawdis } : undefined,
   }
 }
 
@@ -760,6 +864,11 @@ export const getBySlug = query({
           isSuspicious,
           isHiddenByMod,
           isRemoved,
+          verdict: skill.moderationVerdict,
+          reasonCodes: skill.moderationReasonCodes,
+          summary: skill.moderationSummary,
+          engineVersion: skill.moderationEngineVersion,
+          updatedAt: skill.moderationEvaluatedAt,
           reason: isOwner ? skill.moderationReason : undefined,
         }
       : null
@@ -796,6 +905,99 @@ export const getBySlug = query({
             },
           }
         : null,
+    }
+  },
+})
+
+export const checkSlugAvailability = query({
+  args: { slug: v.string() },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx)
+    const slug = args.slug.trim().toLowerCase()
+    if (!slug) {
+      return {
+        available: false,
+        reason: 'taken' as const,
+        message: 'Slug is required.',
+        url: null,
+      }
+    }
+
+    const skill = await ctx.db
+      .query('skills')
+      .withIndex('by_slug', (q) => q.eq('slug', slug))
+      .unique()
+
+    if (!skill) {
+      const reservation = await getLatestActiveReservedSlug(ctx, slug)
+      if (
+        reservation &&
+        reservation.expiresAt > Date.now() &&
+        reservation.originalOwnerUserId !== userId
+      ) {
+        return {
+          available: false,
+          reason: 'reserved' as const,
+          message: formatReservedSlugCooldownMessage(slug, reservation.expiresAt),
+          url: null,
+        }
+      }
+      return {
+        available: true,
+        reason: 'available' as const,
+        message: null,
+        url: null,
+      }
+    }
+
+    if (userId && skill.ownerUserId === userId) {
+      return {
+        available: true,
+        reason: 'available' as const,
+        message: null,
+        url: null,
+      }
+    }
+
+    const owner = await ctx.db.get(skill.ownerUserId)
+    const url = buildConflictingSkillUrl(skill, owner)
+    const slugTakenMessage = buildSlugTakenErrorMessage(skill, owner)
+
+    if (!owner || owner.deletedAt || owner.deactivatedAt) {
+      return {
+        available: false,
+        reason: 'taken' as const,
+        message: slugTakenMessage,
+        url,
+      }
+    }
+
+    if (userId) {
+      const [ownerProviderAccountId, callerProviderAccountId] = await Promise.all([
+        getGitHubProviderAccountId(ctx, skill.ownerUserId),
+        getGitHubProviderAccountId(ctx, userId),
+      ])
+
+      if (
+        canHealSkillOwnershipByGitHubProviderAccountId(
+          ownerProviderAccountId,
+          callerProviderAccountId,
+        )
+      ) {
+        return {
+          available: true,
+          reason: 'available' as const,
+          message: null,
+          url: null,
+        }
+      }
+    }
+
+    return {
+      available: false,
+      reason: 'taken' as const,
+      message: slugTakenMessage,
+      url,
     }
   },
 })
@@ -937,6 +1139,10 @@ export const clearOwnerSuspiciousFlagsInternal = internalMutation({
       ) {
         patch.moderationStatus = 'active'
       }
+      patch.isSuspicious = computeIsSuspicious({
+        moderationFlags: patch.moderationFlags,
+        moderationReason: (patch.moderationReason ?? skill.moderationReason) as string | undefined,
+      })
 
       const nextSkill = { ...skill, ...patch }
       await ctx.db.patch(skill._id, patch)
@@ -1510,6 +1716,10 @@ export const report = mutation({
         moderationStatus: 'hidden',
         moderationReason: 'auto.reports',
         moderationNotes: 'Auto-hidden after 4 unique reports.',
+        isSuspicious: computeIsSuspicious({
+          moderationFlags: skill.moderationFlags,
+          moderationReason: 'auto.reports',
+        }),
         hiddenAt: now,
         lastReviewedAt: now,
       })
@@ -1626,20 +1836,23 @@ export const listPublicPageV2 = query({
     const dir = args.dir ?? (sort === 'name' ? 'asc' : 'desc')
     const { numItems, cursor: initialCursor } = normalizePublicListPagination(args.paginationOpts)
 
-    const runPaginate = (cursor: string | null) =>
-      ctx.db
+    const runPaginate = (cursor: string | null) => {
+      return ctx.db
         .query('skills')
         .withIndex(SORT_INDEXES[sort], (q) => q.eq('softDeletedAt', undefined))
         .order(dir)
         .paginate({ cursor, numItems })
+    }
 
     // Use the index to filter out soft-deleted skills at query time.
     // softDeletedAt === undefined means active (non-deleted) skills only.
     // When post-pagination filters are active, skip empty filtered pages so clients
     // don't bounce between CanLoadMore/LoadingMore with no visible new rows.
+    // `isSuspicious` is still backfilled on existing rows, so mixing cursor families
+    // (`by_nonsuspicious_*` vs base sort indexes) can skip rows or duplicate pages.
+    // Stay on the base sort index and filter in JS until the backfill is complete.
     let result = await paginateWithStaleCursorRecovery(runPaginate, initialCursor)
     let filteredPage = filterPublicSkillPage(result.page, args)
-
     while ((args.nonSuspiciousOnly || args.highlightedOnly) && filteredPage.length === 0 && !result.isDone) {
       result = await runPaginate(result.continueCursor)
       filteredPage = filterPublicSkillPage(result.page, args)
@@ -1902,11 +2115,8 @@ export const getScanQueueHealthInternal = internalQuery({
   handler: async (ctx) => {
     const pending = await ctx.db
       .query('skills')
-      .filter((q) =>
-        q.and(
-          q.eq(q.field('moderationStatus'), 'hidden'),
-          q.eq(q.field('moderationReason'), 'pending.scan'),
-        ),
+      .withIndex('by_moderation', (q) =>
+        q.eq('moderationStatus', 'hidden').eq('moderationReason', 'pending.scan'),
       )
       .collect()
 
@@ -1948,23 +2158,31 @@ export const getActiveSkillsMissingVTCacheInternal = internalQuery({
     // Skills waiting for VT + LLM-evaluated skills that still need VT cache
     const vtPending = await ctx.db
       .query('skills')
-      .filter((q) =>
-        q.and(
-          q.eq(q.field('moderationStatus'), 'active'),
-          q.eq(q.field('moderationReason'), 'scanner.vt.pending'),
-        ),
+      .withIndex('by_moderation', (q) =>
+        q.eq('moderationStatus', 'active').eq('moderationReason', 'scanner.vt.pending'),
       )
       .take(poolSize)
-    const llmEvaluated = await ctx.db
-      .query('skills')
-      .filter((q) =>
-        q.or(
-          q.eq(q.field('moderationReason'), 'scanner.llm.clean'),
-          q.eq(q.field('moderationReason'), 'scanner.llm.suspicious'),
-          q.eq(q.field('moderationReason'), 'scanner.llm.malicious'),
-        ),
-      )
-      .take(poolSize)
+    const [llmClean, llmSuspicious, llmMalicious] = await Promise.all([
+      ctx.db
+        .query('skills')
+        .withIndex('by_moderation', (q) =>
+          q.eq('moderationStatus', 'active').eq('moderationReason', 'scanner.llm.clean'),
+        )
+        .take(poolSize),
+      ctx.db
+        .query('skills')
+        .withIndex('by_moderation', (q) =>
+          q.eq('moderationStatus', 'active').eq('moderationReason', 'scanner.llm.suspicious'),
+        )
+        .take(poolSize),
+      ctx.db
+        .query('skills')
+        .withIndex('by_moderation', (q) =>
+          q.eq('moderationStatus', 'active').eq('moderationReason', 'scanner.llm.malicious'),
+        )
+        .take(poolSize),
+    ])
+    const llmEvaluated = [...llmClean, ...llmSuspicious, ...llmMalicious]
 
     // Dedup across pools
     const seen = new Set<string>()
@@ -2011,7 +2229,7 @@ export const getAllActiveSkillsForRescanInternal = internalQuery({
   handler: async (ctx) => {
     const activeSkills = await ctx.db
       .query('skills')
-      .filter((q) => q.eq(q.field('moderationStatus'), 'active'))
+      .withIndex('by_moderation', (q) => q.eq('moderationStatus', 'active'))
       .collect()
 
     const results: Array<{
@@ -2051,10 +2269,10 @@ export const getActiveSkillBatchForRescanInternal = internalQuery({
     const batchSize = args.batchSize ?? 100
     const cursor = args.cursor ?? 0
 
-    // Query skills created after the cursor, ordered by _creationTime (ascending for stable pagination)
+    // Use built-in by_creation_time index for stable cursor-based pagination
     const candidates = await ctx.db
       .query('skills')
-      .filter((q) => q.gt(q.field('_creationTime'), cursor))
+      .withIndex('by_creation_time', (q) => q.gt('_creationTime', cursor))
       .order('asc')
       .take(batchSize * 3) // Over-fetch to account for filtering
 
@@ -2109,9 +2327,10 @@ export const getActiveSkillBatchForLlmBackfillInternal = internalQuery({
     const batchSize = args.batchSize ?? 10
     const cursor = args.cursor ?? 0
 
+    // Use built-in by_creation_time index for stable cursor-based pagination
     const candidates = await ctx.db
       .query('skills')
-      .filter((q) => q.gt(q.field('_creationTime'), cursor))
+      .withIndex('by_creation_time', (q) => q.gt('_creationTime', cursor))
       .order('asc')
       .take(batchSize * 3)
 
@@ -2157,12 +2376,23 @@ export const getSkillsWithStaleModerationReasonInternal = internalQuery({
   handler: async (ctx, args) => {
     const limit = args.limit ?? 100
 
-    // Find skills with pending-like moderationReason
-    const staleReasons = new Set(['scanner.vt.pending', 'pending.scan'])
-    const allSkills = await ctx.db
-      .query('skills')
-      .filter((q) => q.eq(q.field('moderationStatus'), 'active'))
-      .collect()
+    // Over-fetch from each bucket since some will be filtered out (no vtAnalysis).
+    const poolSize = limit * 2
+    // Find skills with pending-like moderationReason using indexed queries
+    const [vtPending, pendingScan] = await Promise.all([
+      ctx.db
+        .query('skills')
+        .withIndex('by_moderation', (q) =>
+          q.eq('moderationStatus', 'active').eq('moderationReason', 'scanner.vt.pending'),
+        )
+        .take(poolSize),
+      ctx.db
+        .query('skills')
+        .withIndex('by_moderation', (q) =>
+          q.eq('moderationStatus', 'active').eq('moderationReason', 'pending.scan'),
+        )
+        .take(poolSize),
+    ])
 
     const results: Array<{
       skillId: Id<'skills'>
@@ -2172,8 +2402,9 @@ export const getSkillsWithStaleModerationReasonInternal = internalQuery({
       vtStatus: string | null
     }> = []
 
-    for (const skill of allSkills) {
-      if (!skill.moderationReason || !staleReasons.has(skill.moderationReason)) continue
+    for (const skill of [...vtPending, ...pendingScan]) {
+      if (results.length >= limit) break
+      if (!skill.moderationReason) continue
       if (!skill.latestVersionId) continue
 
       const version = await ctx.db.get(skill.latestVersionId)
@@ -2186,8 +2417,6 @@ export const getSkillsWithStaleModerationReasonInternal = internalQuery({
         currentReason: skill.moderationReason,
         vtStatus: version.vtAnalysis.status,
       })
-
-      if (results.length >= limit) break
     }
 
     return results
@@ -2205,11 +2434,8 @@ export const getPendingVTSkillsInternal = internalQuery({
 
     const skills = await ctx.db
       .query('skills')
-      .filter((q) =>
-        q.and(
-          q.eq(q.field('moderationStatus'), 'active'),
-          q.eq(q.field('moderationReason'), 'scanner.vt.pending'),
-        ),
+      .withIndex('by_moderation', (q) =>
+        q.eq('moderationStatus', 'active').eq('moderationReason', 'scanner.vt.pending'),
       )
       .take(limit)
 
@@ -2246,8 +2472,13 @@ export const updateSkillModerationReasonInternal = internalMutation({
     moderationReason: v.string(),
   },
   handler: async (ctx, args) => {
+    const skill = await ctx.db.get(args.skillId)
     await ctx.db.patch(args.skillId, {
       moderationReason: args.moderationReason,
+      isSuspicious: computeIsSuspicious({
+        moderationFlags: skill?.moderationFlags,
+        moderationReason: args.moderationReason,
+      }),
     })
   },
 })
@@ -2392,6 +2623,10 @@ export const applyBanToOwnedSkillsBatchInternal = internalMutation({
         patch.hiddenAt = args.bannedAt
         patch.hiddenBy = args.hiddenBy
         patch.lastReviewedAt = args.bannedAt
+        patch.isSuspicious = computeIsSuspicious({
+          moderationFlags: skill.moderationFlags,
+          moderationReason: 'user.banned',
+        })
         hiddenCount += 1
       }
 
@@ -2441,6 +2676,10 @@ export const restoreOwnedSkillsForUnbanBatchInternal = internalMutation({
         softDeletedAt: undefined,
         moderationStatus: 'active',
         moderationReason: 'restored.unban',
+        isSuspicious: computeIsSuspicious({
+          moderationFlags: skill.moderationFlags,
+          moderationReason: 'restored.unban',
+        }),
         hiddenAt: undefined,
         hiddenBy: undefined,
         lastReviewedAt: now,
@@ -2476,11 +2715,8 @@ export const getLegacyPendingScanSkillsInternal = internalQuery({
     const limit = args.limit ?? 1000
     const skills = await ctx.db
       .query('skills')
-      .filter((q) =>
-        q.and(
-          q.eq(q.field('moderationStatus'), 'active'),
-          q.eq(q.field('moderationReason'), 'pending.scan'),
-        ),
+      .withIndex('by_moderation', (q) =>
+        q.eq('moderationStatus', 'active').eq('moderationReason', 'pending.scan'),
       )
       .take(limit)
 
@@ -2515,11 +2751,8 @@ export const getUnscannedActiveSkillsInternal = internalQuery({
     const limit = args.limit ?? 1000
     const skills = await ctx.db
       .query('skills')
-      .filter((q) =>
-        q.and(
-          q.eq(q.field('moderationStatus'), 'active'),
-          q.eq(q.field('moderationReason'), undefined),
-        ),
+      .withIndex('by_moderation', (q) =>
+        q.eq('moderationStatus', 'active').eq('moderationReason', undefined),
       )
       .take(limit)
 
@@ -2572,6 +2805,10 @@ export const markScanStaleInternal = internalMutation({
 
     await ctx.db.patch(args.skillId, {
       moderationReason: 'pending.scan.stale',
+      isSuspicious: computeIsSuspicious({
+        moderationFlags: skill.moderationFlags,
+        moderationReason: 'pending.scan.stale',
+      }),
       updatedAt: Date.now(),
     })
   },
@@ -2646,7 +2883,12 @@ export const updateVersionLlmAnalysisInternal = internalMutation({
   handler: async (ctx, args) => {
     const version = await ctx.db.get(args.versionId)
     if (!version) return
+    const nextVersion = { ...version, llmAnalysis: args.llmAnalysis }
     await ctx.db.patch(args.versionId, { llmAnalysis: args.llmAnalysis })
+
+    const skill = await ctx.db.get(version.skillId)
+    if (!skill || skill.latestVersionId !== version._id) return
+    await patchStructuredModerationFromVersion(ctx, skill, nextVersion)
   },
 })
 
@@ -2714,12 +2956,36 @@ export const approveSkillByHashInternal = internalMutation({
         ? (skill.moderationNotes ??
           'Quality gate quarantine is still active. Manual moderation review required.')
         : undefined
+      const scanner = args.scanner.trim().toLowerCase()
+      const snapshot = buildModerationSnapshot({
+        staticScan: version.staticScan,
+        vtStatus: scanner === 'vt' ? args.status : version.vtAnalysis?.status,
+        llmStatus: scanner === 'llm' ? args.status : version.llmAnalysis?.status,
+        sourceVersionId: version._id,
+      })
+      const nextReasonCodes =
+        bypassSuspicious && !isMalicious
+          ? snapshot.reasonCodes.filter((code) => !code.startsWith('suspicious.'))
+          : snapshot.reasonCodes
+      const nextVerdict = verdictFromCodes(nextReasonCodes)
+      const nextLegacyFlags = legacyFlagsFromVerdict(nextVerdict)
 
       const patch: Partial<Doc<'skills'>> = {
         moderationStatus: nextModerationStatus,
         moderationReason: nextModerationReason,
-        moderationFlags: newFlags,
+        moderationFlags: newFlags ?? nextLegacyFlags,
+        moderationVerdict: nextVerdict,
+        moderationReasonCodes: nextReasonCodes.length ? nextReasonCodes : undefined,
+        moderationEvidence: snapshot.evidence.length ? snapshot.evidence : undefined,
+        moderationSummary: summarizeReasonCodes(nextReasonCodes),
+        moderationEngineVersion: snapshot.engineVersion,
+        moderationEvaluatedAt: snapshot.evaluatedAt,
+        moderationSourceVersionId: version._id,
         moderationNotes: nextModerationNotes,
+        isSuspicious: computeIsSuspicious({
+          moderationFlags: (newFlags ?? nextLegacyFlags) as string[] | undefined,
+          moderationReason: nextModerationReason,
+        }),
         hiddenAt: nextModerationStatus === 'hidden' ? now : undefined,
         hiddenBy: undefined,
         lastReviewedAt: nextModerationStatus === 'hidden' ? now : undefined,
@@ -2780,8 +3046,27 @@ export const escalateByVtInternal = internalMutation({
       newFlags = ['flagged.suspicious']
     }
 
+    const nextModerationFlags = newFlags.length ? newFlags : undefined
+    const snapshot = buildModerationSnapshot({
+      staticScan: version.staticScan,
+      vtStatus: args.status,
+      llmStatus: version.llmAnalysis?.status,
+      sourceVersionId: version._id,
+    })
+    const nextReasonCodes =
+      bypassSuspicious && !isMalicious
+        ? snapshot.reasonCodes.filter((code) => !code.startsWith('suspicious.'))
+        : snapshot.reasonCodes
+    const nextVerdict = verdictFromCodes(nextReasonCodes)
     const patch: Partial<Doc<'skills'>> = {
-      moderationFlags: newFlags.length ? newFlags : undefined,
+      moderationFlags: nextModerationFlags,
+      moderationVerdict: nextVerdict,
+      moderationReasonCodes: nextReasonCodes.length ? nextReasonCodes : undefined,
+      moderationEvidence: snapshot.evidence.length ? snapshot.evidence : undefined,
+      moderationSummary: summarizeReasonCodes(nextReasonCodes),
+      moderationEngineVersion: snapshot.engineVersion,
+      moderationEvaluatedAt: snapshot.evaluatedAt,
+      moderationSourceVersionId: version._id,
       updatedAt: Date.now(),
     }
     if (bypassSuspicious) {
@@ -2794,6 +3079,11 @@ export const escalateByVtInternal = internalMutation({
     if (isMalicious) {
       patch.moderationStatus = 'hidden'
     }
+
+    patch.isSuspicious = computeIsSuspicious({
+      moderationFlags: nextModerationFlags,
+      moderationReason: (patch.moderationReason ?? skill.moderationReason) as string | undefined,
+    })
 
     const nextSkill = { ...skill, ...patch }
     await ctx.db.patch(skill._id, patch)
@@ -2830,6 +3120,7 @@ export const publishVersion: ReturnType<typeof action> = action({
     displayName: v.string(),
     version: v.string(),
     changelog: v.string(),
+    acceptLicenseTerms: v.optional(v.boolean()),
     tags: v.optional(v.array(v.string())),
     forkOf: v.optional(
       v.object({
@@ -2848,6 +3139,9 @@ export const publishVersion: ReturnType<typeof action> = action({
     ),
   },
   handler: async (ctx, args): Promise<PublishResult> => {
+    if (args.acceptLicenseTerms !== true) {
+      throw new ConvexError('MIT-0 license terms must be accepted to publish skills')
+    }
     const { userId } = await requireUserFromAction(ctx)
     return publishVersionForUser(ctx, userId, args)
   },
@@ -2994,11 +3288,27 @@ export const updateTags = mutation({
 
     const latestEntry = args.tags.find((entry) => entry.tag === 'latest')
     const now = Date.now()
-    await ctx.db.patch(skill._id, {
+    const patch: Partial<Doc<'skills'>> = {
       tags: nextTags,
       latestVersionId: latestEntry ? latestEntry.versionId : skill.latestVersionId,
       updatedAt: now,
-    })
+    }
+
+    // Keep latestVersionSummary in sync when the latest tag is repointed
+    if (latestEntry && latestEntry.versionId !== skill.latestVersionId) {
+      const version = await ctx.db.get(latestEntry.versionId)
+      if (version) {
+        patch.latestVersionSummary = {
+          version: version.version,
+          createdAt: version.createdAt,
+          changelog: version.changelog,
+          changelogSource: version.changelogSource,
+          clawdis: version.parsed?.clawdis,
+        }
+      }
+    }
+
+    await ctx.db.patch(skill._id, patch)
 
     if (latestEntry) {
       await setSkillEmbeddingsLatestVersion(ctx, skill._id, latestEntry.versionId, now)
@@ -3561,6 +3871,7 @@ export const insertVersion = internalMutation({
       frontmatter: v.record(v.string(), v.any()),
       metadata: v.optional(v.any()),
       clawdis: v.optional(v.any()),
+      license: v.optional(v.literal(PLATFORM_SKILL_LICENSE)),
     }),
     summary: v.optional(v.string()),
     qualityAssessment: v.optional(
@@ -3582,6 +3893,23 @@ export const insertVersion = internalMutation({
         }),
       }),
     ),
+    staticScan: v.object({
+      status: v.union(v.literal('clean'), v.literal('suspicious'), v.literal('malicious')),
+      reasonCodes: v.array(v.string()),
+      findings: v.array(
+        v.object({
+          code: v.string(),
+          severity: v.union(v.literal('info'), v.literal('warn'), v.literal('critical')),
+          file: v.string(),
+          line: v.number(),
+          message: v.string(),
+          evidence: v.string(),
+        }),
+      ),
+      summary: v.string(),
+      engineVersion: v.string(),
+      checkedAt: v.number(),
+    }),
     embedding: v.array(v.number()),
   },
   handler: async (ctx, args) => {
@@ -3600,8 +3928,9 @@ export const insertVersion = internalMutation({
       // Fallback: Convex Auth can create duplicate `users` records. Heal ownership ONLY
       // when the underlying GitHub identity matches (authAccounts.providerAccountId).
       const owner = await ctx.db.get(skill.ownerUserId)
+      const slugTakenMessage = buildSlugTakenErrorMessage(skill, owner)
       if (!owner || owner.deletedAt || owner.deactivatedAt) {
-        throw new Error('Only the owner can publish updates')
+        throw new ConvexError(slugTakenMessage)
       }
 
       const [ownerProviderAccountId, callerProviderAccountId] = await Promise.all([
@@ -3616,7 +3945,7 @@ export const insertVersion = internalMutation({
           callerProviderAccountId,
         )
       ) {
-        throw new Error('Only the owner can publish updates')
+        throw new ConvexError(slugTakenMessage)
       }
 
       await ctx.db.patch(skill._id, { ownerUserId: userId, updatedAt: now })
@@ -3638,6 +3967,7 @@ export const insertVersion = internalMutation({
     const moderationNotes = isQualityQuarantine
       ? `Auto-quarantined by quality gate (score=${qualityAssessment.score}, tier=${qualityAssessment.trustTier}, similar=${qualityAssessment.similarRecentCount}).`
       : undefined
+    const staticSnapshot = buildModerationSnapshot({ staticScan: args.staticScan })
 
     const qualityRecord = qualityAssessment
       ? {
@@ -3700,11 +4030,14 @@ export const insertVersion = internalMutation({
 
       const summary = args.summary ?? getFrontmatterValue(args.parsed.frontmatter, 'description')
       const summaryValue = summary ?? undefined
-      const moderationFlags = deriveModerationFlags({
+      const derivedFlags = deriveModerationFlags({
         skill: { slug: args.slug, displayName: args.displayName, summary: summaryValue },
         parsed: args.parsed,
         files: args.files,
       })
+      const newSkillFlags = Array.from(
+        new Set([...(derivedFlags ?? []), ...(staticSnapshot.legacyFlags ?? [])]),
+      )
       const skillId = await ctx.db.insert('skills', {
         slug: args.slug,
         displayName: args.displayName,
@@ -3724,8 +4057,21 @@ export const insertVersion = internalMutation({
         moderationStatus: initialModerationStatus,
         moderationReason,
         moderationNotes,
+        moderationVerdict: staticSnapshot.verdict,
+        moderationReasonCodes: staticSnapshot.reasonCodes.length
+          ? staticSnapshot.reasonCodes
+          : undefined,
+        moderationEvidence: staticSnapshot.evidence.length ? staticSnapshot.evidence : undefined,
+        moderationSummary: staticSnapshot.summary,
+        moderationEngineVersion: staticSnapshot.engineVersion,
+        moderationEvaluatedAt: staticSnapshot.evaluatedAt,
+        moderationSourceVersionId: undefined,
         quality: qualityRecord,
-        moderationFlags: moderationFlags.length ? moderationFlags : undefined,
+        moderationFlags: newSkillFlags.length ? newSkillFlags : undefined,
+        isSuspicious: computeIsSuspicious({
+          moderationFlags: newSkillFlags.length ? newSkillFlags : undefined,
+          moderationReason: moderationReason,
+        }),
         reportCount: 0,
         lastReportedAt: undefined,
         statsDownloads: 0,
@@ -3756,7 +4102,7 @@ export const insertVersion = internalMutation({
       .withIndex('by_skill_version', (q) => q.eq('skillId', skill._id).eq('version', args.version))
       .unique()
     if (existingVersion) {
-      throw new Error('Version already exists')
+      throw new ConvexError('Version already exists')
     }
 
     const versionId = await ctx.db.insert('skillVersions', {
@@ -3767,6 +4113,7 @@ export const insertVersion = internalMutation({
       changelogSource: args.changelogSource,
       files: args.files,
       parsed: args.parsed,
+      staticScan: args.staticScan,
       createdBy: userId,
       createdAt: now,
       softDeletedAt: undefined,
@@ -3782,24 +4129,52 @@ export const insertVersion = internalMutation({
 
     const nextSummary =
       args.summary ?? getFrontmatterValue(args.parsed.frontmatter, 'description') ?? skill.summary
-    const moderationFlags = deriveModerationFlags({
+    const derivedFlags = deriveModerationFlags({
       skill: { slug: skill.slug, displayName: args.displayName, summary: nextSummary ?? undefined },
       parsed: args.parsed,
       files: args.files,
     })
-
+    const moderationSnapshot = buildModerationSnapshot({
+      staticScan: args.staticScan,
+      sourceVersionId: versionId,
+    })
+    const nextFlags = Array.from(
+      new Set([...(derivedFlags ?? []), ...(moderationSnapshot.legacyFlags ?? [])]),
+    )
     const patch: Partial<Doc<'skills'>> = {
       displayName: args.displayName,
       summary: nextSummary ?? undefined,
       latestVersionId: versionId,
+      latestVersionSummary: {
+        version: args.version,
+        createdAt: now,
+        changelog: args.changelog,
+        changelogSource: args.changelogSource,
+        clawdis: args.parsed.clawdis,
+      },
       tags: nextTags,
       stats: { ...skill.stats, versions: skill.stats.versions + 1 },
       softDeletedAt: undefined,
       moderationStatus: initialModerationStatus,
       moderationReason,
       moderationNotes,
+      moderationVerdict: moderationSnapshot.verdict,
+      moderationReasonCodes: moderationSnapshot.reasonCodes.length
+        ? moderationSnapshot.reasonCodes
+        : undefined,
+      moderationEvidence: moderationSnapshot.evidence.length
+        ? moderationSnapshot.evidence
+        : undefined,
+      moderationSummary: moderationSnapshot.summary,
+      moderationEngineVersion: moderationSnapshot.engineVersion,
+      moderationEvaluatedAt: moderationSnapshot.evaluatedAt,
+      moderationSourceVersionId: versionId,
       quality: qualityRecord ?? skill.quality,
-      moderationFlags: moderationFlags.length ? moderationFlags : undefined,
+      moderationFlags: nextFlags.length ? nextFlags : undefined,
+      isSuspicious: computeIsSuspicious({
+        moderationFlags: nextFlags.length ? nextFlags : undefined,
+        moderationReason: moderationReason,
+      }),
       updatedAt: now,
     }
     const nextSkill = { ...skill, ...patch }

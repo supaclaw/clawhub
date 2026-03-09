@@ -3,6 +3,8 @@ import { defineSchema, defineTable } from 'convex/server'
 import { v } from 'convex/values'
 import { EMBEDDING_DIMENSIONS } from './lib/embeddings'
 
+const PLATFORM_SKILL_LICENSE = 'MIT-0' as const
+
 const users = defineTable({
   name: v.optional(v.string()),
   image: v.optional(v.string()),
@@ -46,6 +48,15 @@ const skills = defineTable({
     }),
   ),
   latestVersionId: v.optional(v.id('skillVersions')),
+  latestVersionSummary: v.optional(
+    v.object({
+      version: v.string(),
+      createdAt: v.number(),
+      changelog: v.string(),
+      changelogSource: v.optional(v.union(v.literal('auto'), v.literal('user'))),
+      clawdis: v.optional(v.any()),
+    }),
+  ),
   tags: v.record(v.string(), v.id('skillVersions')),
   softDeletedAt: v.optional(v.number()),
   badges: v.optional(
@@ -81,6 +92,26 @@ const skills = defineTable({
   ),
   moderationNotes: v.optional(v.string()),
   moderationReason: v.optional(v.string()),
+  moderationVerdict: v.optional(
+    v.union(v.literal('clean'), v.literal('suspicious'), v.literal('malicious')),
+  ),
+  moderationReasonCodes: v.optional(v.array(v.string())),
+  moderationEvidence: v.optional(
+    v.array(
+      v.object({
+        code: v.string(),
+        severity: v.union(v.literal('info'), v.literal('warn'), v.literal('critical')),
+        file: v.string(),
+        line: v.number(),
+        message: v.string(),
+        evidence: v.string(),
+      }),
+    ),
+  ),
+  moderationSummary: v.optional(v.string()),
+  moderationEngineVersion: v.optional(v.string()),
+  moderationEvaluatedAt: v.optional(v.number()),
+  moderationSourceVersionId: v.optional(v.id('skillVersions')),
   quality: v.optional(
     v.object({
       score: v.number(),
@@ -101,6 +132,7 @@ const skills = defineTable({
       evaluatedAt: v.number(),
     }),
   ),
+  isSuspicious: v.optional(v.boolean()),
   moderationFlags: v.optional(v.array(v.string())),
   lastReviewedAt: v.optional(v.number()),
   // VT scan tracking
@@ -146,6 +178,23 @@ const skills = defineTable({
   ])
   .index('by_canonical', ['canonicalSkillId'])
   .index('by_fork_of', ['forkOf.skillId'])
+  .index('by_moderation', ['moderationStatus', 'moderationReason'])
+  .index('by_nonsuspicious_updated', ['softDeletedAt', 'isSuspicious', 'updatedAt'])
+  .index('by_nonsuspicious_created', ['softDeletedAt', 'isSuspicious', 'createdAt'])
+  .index('by_nonsuspicious_name', ['softDeletedAt', 'isSuspicious', 'displayName'])
+  .index('by_nonsuspicious_downloads', [
+    'softDeletedAt',
+    'isSuspicious',
+    'statsDownloads',
+    'updatedAt',
+  ])
+  .index('by_nonsuspicious_stars', ['softDeletedAt', 'isSuspicious', 'statsStars', 'updatedAt'])
+  .index('by_nonsuspicious_installs', [
+    'softDeletedAt',
+    'isSuspicious',
+    'statsInstallsAllTime',
+    'updatedAt',
+  ])
 
 const souls = defineTable({
   slug: v.string(),
@@ -188,6 +237,7 @@ const skillVersions = defineTable({
     metadata: v.optional(v.any()),
     clawdis: v.optional(v.any()),
     moltbot: v.optional(v.any()),
+    license: v.optional(v.literal(PLATFORM_SKILL_LICENSE)),
   }),
   createdBy: v.id('users'),
   createdAt: v.number(),
@@ -221,6 +271,25 @@ const skillVersions = defineTable({
       guidance: v.optional(v.string()),
       findings: v.optional(v.string()),
       model: v.optional(v.string()),
+      checkedAt: v.number(),
+    }),
+  ),
+  staticScan: v.optional(
+    v.object({
+      status: v.union(v.literal('clean'), v.literal('suspicious'), v.literal('malicious')),
+      reasonCodes: v.array(v.string()),
+      findings: v.array(
+        v.object({
+          code: v.string(),
+          severity: v.union(v.literal('info'), v.literal('warn'), v.literal('critical')),
+          file: v.string(),
+          line: v.number(),
+          message: v.string(),
+          evidence: v.string(),
+        }),
+      ),
+      summary: v.string(),
+      engineVersion: v.string(),
       checkedAt: v.number(),
     }),
   ),
@@ -557,6 +626,7 @@ const reservedSlugs = defineTable({
 const githubBackupSyncState = defineTable({
   key: v.string(),
   cursor: v.optional(v.string()),
+  pruneCursor: v.optional(v.string()),
   updatedAt: v.number(),
 }).index('by_key', ['key'])
 
@@ -598,6 +668,29 @@ const userSkillRootInstalls = defineTable({
   .index('by_user_skill', ['userId', 'skillId'])
   .index('by_skill', ['skillId'])
 
+const skillOwnershipTransfers = defineTable({
+  skillId: v.id('skills'),
+  fromUserId: v.id('users'),
+  toUserId: v.id('users'),
+  status: v.union(
+    v.literal('pending'),
+    v.literal('accepted'),
+    v.literal('rejected'),
+    v.literal('cancelled'),
+    v.literal('expired'),
+  ),
+  message: v.optional(v.string()),
+  requestedAt: v.number(),
+  respondedAt: v.optional(v.number()),
+  expiresAt: v.number(),
+})
+  .index('by_skill', ['skillId'])
+  .index('by_from_user', ['fromUserId'])
+  .index('by_to_user', ['toUserId'])
+  .index('by_to_user_status', ['toUserId', 'status'])
+  .index('by_from_user_status', ['fromUserId', 'status'])
+  .index('by_skill_status', ['skillId', 'status'])
+
 export default defineSchema({
   ...authTables,
   users,
@@ -633,4 +726,5 @@ export default defineSchema({
   userSyncRoots,
   userSkillInstalls,
   userSkillRootInstalls,
+  skillOwnershipTransfers,
 })

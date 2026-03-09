@@ -94,6 +94,11 @@ describe('Upload route', () => {
     const file = new File(['hello'], 'SKILL.md', { type: 'text/markdown' })
     const input = screen.getByTestId('upload-input') as HTMLInputElement
     fireEvent.change(input, { target: { files: [file] } })
+    fireEvent.click(
+      screen.getByRole('checkbox', {
+        name: /i have the rights to this skill and agree to publish it under mit-0/i,
+      }),
+    )
 
     const publishButton = screen.getByRole('button', { name: /publish/i }) as HTMLButtonElement
     expect(await screen.findByText(/All checks passed/i)).toBeTruthy()
@@ -124,6 +129,11 @@ describe('Upload route', () => {
 
     const input = screen.getByTestId('upload-input') as HTMLInputElement
     fireEvent.change(input, { target: { files: [zipFile] } })
+    fireEvent.click(
+      screen.getByRole('checkbox', {
+        name: /i have the rights to this skill and agree to publish it under mit-0/i,
+      }),
+    )
 
     expect(await screen.findByText('notes.txt', {}, { timeout: 3000 })).toBeTruthy()
     expect(screen.getByText('SKILL.md')).toBeTruthy()
@@ -152,6 +162,11 @@ describe('Upload route', () => {
 
     const input = screen.getByTestId('upload-input') as HTMLInputElement
     fireEvent.change(input, { target: { files: [file] } })
+    fireEvent.click(
+      screen.getByRole('checkbox', {
+        name: /i have the rights to this skill and agree to publish it under mit-0/i,
+      }),
+    )
 
     expect(await screen.findByText('SKILL.md')).toBeTruthy()
     expect(await screen.findByText(/All checks passed/i)).toBeTruthy()
@@ -217,6 +232,11 @@ describe('Upload route', () => {
     const junk = new File(['junk'], '.DS_Store', { type: 'application/octet-stream' })
     const input = screen.getByTestId('upload-input') as HTMLInputElement
     fireEvent.change(input, { target: { files: [skill, junk] } })
+    fireEvent.click(
+      screen.getByRole('checkbox', {
+        name: /i have the rights to this skill and agree to publish it under mit-0/i,
+      }),
+    )
 
     expect(await screen.findByText('SKILL.md')).toBeTruthy()
     expect(screen.queryByText('.DS_Store')).toBeNull()
@@ -246,9 +266,58 @@ describe('Upload route', () => {
     const file = new File(['hello'], 'SKILL.md', { type: 'text/markdown' })
     const input = screen.getByTestId('upload-input') as HTMLInputElement
     fireEvent.change(input, { target: { files: [file] } })
+    fireEvent.click(
+      screen.getByRole('checkbox', {
+        name: /i have the rights to this skill and agree to publish it under mit-0/i,
+      }),
+    )
     const publishButton = screen.getByRole('button', { name: /publish/i }) as HTMLButtonElement
     await screen.findByText(/All checks passed/i)
     fireEvent.click(publishButton)
     expect(await screen.findByText(/Changelog is required/i)).toBeTruthy()
+  })
+
+  it('blocks publish in preflight when slug availability reports a collision', async () => {
+    useQueryMock.mockImplementation((_fn: unknown, args: unknown) => {
+      if (args === 'skip') return undefined
+      if (
+        args &&
+        typeof args === 'object' &&
+        'slug' in (args as Record<string, unknown>) &&
+        (args as Record<string, unknown>).slug === 'taken-skill'
+      ) {
+        return {
+          available: false,
+          reason: 'taken',
+          message: 'Slug is already taken. Choose a different slug.',
+          url: '/alice/taken-skill',
+        }
+      }
+      return null
+    })
+
+    render(<Upload />)
+    fireEvent.change(screen.getByPlaceholderText('skill-name'), {
+      target: { value: 'taken-skill' },
+    })
+    fireEvent.change(screen.getByPlaceholderText('My skill'), {
+      target: { value: 'Taken Skill' },
+    })
+    fireEvent.change(screen.getByPlaceholderText('1.0.0'), {
+      target: { value: '1.2.3' },
+    })
+    fireEvent.change(screen.getByPlaceholderText('latest, stable'), {
+      target: { value: 'latest' },
+    })
+    fireEvent.change(screen.getByPlaceholderText('Describe what changed in this skill...'), {
+      target: { value: 'Initial drop.' },
+    })
+    const file = new File(['hello'], 'SKILL.md', { type: 'text/markdown' })
+    const input = screen.getByTestId('upload-input') as HTMLInputElement
+    fireEvent.change(input, { target: { files: [file] } })
+
+    expect(await screen.findByText(/Slug is already taken\. Choose a different slug\./i)).toBeTruthy()
+    expect(screen.getByRole('link', { name: '/alice/taken-skill' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /publish skill/i }).getAttribute('disabled')).not.toBeNull()
   })
 })

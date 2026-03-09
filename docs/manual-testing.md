@@ -57,6 +57,29 @@ Run against prod:
 PLAYWRIGHT_BASE_URL=https://clawhub.ai bun run test:pw
 ```
 
+This smoke gate should fail on visible error UI, page errors, and browser
+console errors.
+
+Recommended workflow coverage in Playwright:
+
+- home/install-switcher + browse CTA
+- `/search` redirect into skills browse
+- skills browse -> detail -> owner profile
+- souls browse -> detail -> owner profile
+- upload signed-out gate
+- import signed-out gate
+- authenticated upload/import canaries when storage state is configured
+
+Authenticated prod canary:
+
+```
+PLAYWRIGHT_BASE_URL=https://clawhub.ai \
+PLAYWRIGHT_AUTH_STORAGE_STATE=/path/to/storage-state.json \
+bunx playwright test e2e/upload-auth-smoke.pw.test.ts
+```
+
+Capture `storage-state.json` once with Playwright or browser devtools after GitHub login.
+
 Run against a local preview server:
 
 ```

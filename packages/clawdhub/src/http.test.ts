@@ -12,7 +12,7 @@ import {
 import { ApiV1WhoamiResponseSchema } from './schema/index.js'
 
 function mockImmediateTimeouts() {
-  const setTimeoutMock = vi.fn((callback: () => void) => {
+  const setTimeoutMock = vi.fn((callback: () => void, _ms?: number) => {
     callback()
     return 1 as unknown as ReturnType<typeof setTimeout>
   })
@@ -261,7 +261,7 @@ describe('apiRequest', () => {
     }
 
     expect(caught).toBeInstanceOf(Error)
-    expect((caught as Error).message).toBe('Timeout')
+    expect((caught as Error).message).toMatch(/timed out/)
     expect(fetchMock).toHaveBeenCalledTimes(3)
     expect(clearTimeoutMock.mock.calls.length).toBeGreaterThanOrEqual(3)
     vi.unstubAllGlobals()
@@ -327,6 +327,31 @@ describe('apiRequestForm', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
     vi.unstubAllGlobals()
   })
+
+  it('uses the longer upload timeout for multipart requests', async () => {
+    const { setTimeoutMock, clearTimeoutMock } = mockImmediateTimeouts()
+    const fetchMock = createAbortingFetchMock()
+    vi.stubGlobal('fetch', fetchMock)
+
+    let caught: unknown
+    try {
+      await apiRequestForm('https://example.com', {
+        method: 'POST',
+        path: '/upload',
+        form: new FormData(),
+      })
+    } catch (error) {
+      caught = error
+    }
+
+    expect(caught).toBeInstanceOf(Error)
+    expect((caught as Error).message).toMatch(/timed out after 120s/i)
+    expect(setTimeoutMock).toHaveBeenCalled()
+    expect(setTimeoutMock.mock.calls[0]?.[1]).toBe(120_000)
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(clearTimeoutMock.mock.calls.length).toBeGreaterThanOrEqual(3)
+    vi.unstubAllGlobals()
+  })
 })
 
 describe('fetchText', () => {
@@ -343,9 +368,30 @@ describe('fetchText', () => {
     }
 
     expect(caught).toBeInstanceOf(Error)
-    expect((caught as Error).message).toBe('Timeout')
+    expect((caught as Error).message).toMatch(/timed out/)
     expect(fetchMock).toHaveBeenCalledTimes(3)
     expect(clearTimeoutMock.mock.calls.length).toBeGreaterThanOrEqual(3)
+    vi.unstubAllGlobals()
+  })
+})
+
+describe('fetchWithTimeout — non-Error normalization', () => {
+  it('wraps DOMException-like non-Error throws into proper Error instances', async () => {
+    const fetchMock = vi.fn(async () => {
+      // Simulate a runtime that throws a non-Error object on abort
+      throw { message: 'The operation was aborted', name: 'AbortError' }
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    let caught: unknown
+    try {
+      await apiRequest('https://example.com', { method: 'GET', path: '/x' })
+    } catch (error) {
+      caught = error
+    }
+
+    expect(caught).toBeInstanceOf(Error)
+    expect((caught as Error).message).toContain('The operation was aborted')
     vi.unstubAllGlobals()
   })
 })

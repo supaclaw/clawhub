@@ -1,8 +1,14 @@
 import { createFileRoute, useNavigate, useSearch } from '@tanstack/react-router'
+import {
+  PLATFORM_SKILL_LICENSE,
+  PLATFORM_SKILL_LICENSE_NAME,
+  PLATFORM_SKILL_LICENSE_SUMMARY,
+} from 'clawhub-schema'
 import { useAction, useMutation, useQuery } from 'convex/react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import semver from 'semver'
 import { api } from '../../convex/_generated/api'
+import { getPublicSlugCollision } from '../lib/slugCollision'
 import { getSiteMode } from '../lib/site'
 import { expandDroppedItems, expandFilesWithReport } from '../lib/uploadFiles'
 import { useAuthStatus } from '../lib/useAuthStatus'
@@ -63,6 +69,7 @@ export function Upload() {
   const [displayName, setDisplayName] = useState('')
   const [version, setVersion] = useState('1.0.0')
   const [tags, setTags] = useState('latest')
+  const [acceptedLicenseTerms, setAcceptedLicenseTerms] = useState(false)
   const [changelog, setChangelog] = useState('')
   const [changelogStatus, setChangelogStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>(
     'idle',
@@ -76,6 +83,13 @@ export function Upload() {
   const [error, setError] = useState<string | null>(null)
   const [isDragging, setIsDragging] = useState(false)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const setFileInputRef = (node: HTMLInputElement | null) => {
+    fileInputRef.current = node
+    if (node) {
+      node.setAttribute('webkitdirectory', '')
+      node.setAttribute('directory', '')
+    }
+  }
   const validationRef = useRef<HTMLDivElement | null>(null)
   const navigate = useNavigate()
   const maxBytes = 50 * 1024 * 1024
@@ -121,6 +135,29 @@ export function Upload() {
   const trimmedSlug = slug.trim()
   const trimmedName = displayName.trim()
   const trimmedChangelog = changelog.trim()
+  const slugAvailability = useQuery(
+    api.skills.checkSlugAvailability,
+    !isSoulMode && isAuthenticated && trimmedSlug && SLUG_PATTERN.test(trimmedSlug)
+      ? { slug: trimmedSlug.toLowerCase() }
+      : 'skip',
+  ) as
+    | {
+        available: boolean
+        reason: 'available' | 'taken' | 'reserved'
+        message: string | null
+        url: string | null
+      }
+    | null
+    | undefined
+  const slugCollision = useMemo(
+    () =>
+      getPublicSlugCollision({
+        isSoulMode,
+        slug: trimmedSlug,
+        result: slugAvailability,
+      }),
+    [isSoulMode, slugAvailability, trimmedSlug],
+  )
 
   useEffect(() => {
     if (!existing?.latestVersion || (!existing?.skill && !existing?.soul)) return
@@ -211,6 +248,9 @@ export function Upload() {
     if (parsedTags.length === 0) {
       issues.push('At least one tag is required.')
     }
+    if (!isSoulMode && !acceptedLicenseTerms) {
+      issues.push('Accept the MIT-0 license terms to publish this skill.')
+    }
     if (files.length === 0) {
       issues.push('Add at least one file.')
     }
@@ -229,6 +269,9 @@ export function Upload() {
     if (totalBytes > maxBytes) {
       issues.push('Total file size exceeds 50MB.')
     }
+    if (slugCollision) {
+      issues.push(slugCollision.message)
+    }
     return {
       issues,
       ready: issues.length === 0,
@@ -238,17 +281,17 @@ export function Upload() {
     trimmedName,
     version,
     parsedTags.length,
+    acceptedLicenseTerms,
     files,
     hasRequiredFile,
+    isSoulMode,
     totalBytes,
     requiredFileLabel,
+    slugCollision,
   ])
 
-  useEffect(() => {
-    if (!fileInputRef.current) return
-    fileInputRef.current.setAttribute('webkitdirectory', '')
-    fileInputRef.current.setAttribute('directory', '')
-  }, [])
+  // webkitdirectory/directory attributes are set via the ref callback (setFileInputRef)
+  // to ensure they persist across hydration and re-renders (#58)
 
   if (!isAuthenticated) {
     return (
@@ -271,6 +314,14 @@ export function Upload() {
       if (validationRef.current && 'scrollIntoView' in validationRef.current) {
         validationRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' })
       }
+      return
+    }
+    if (slugCollision) {
+      setError(slugCollision.message)
+      return
+    }
+    if (!isSoulMode && !acceptedLicenseTerms) {
+      setError('Accept the MIT-0 license terms to publish this skill.')
       return
     }
     setError(null)
@@ -317,6 +368,7 @@ export function Upload() {
         displayName: trimmedName,
         version,
         changelog: trimmedChangelog,
+        acceptLicenseTerms: isSoulMode ? undefined : acceptedLicenseTerms,
         tags: parsedTags,
         files: uploaded,
       })
@@ -416,15 +468,12 @@ export function Upload() {
             }}
           >
             <input
-              ref={fileInputRef}
+              ref={setFileInputRef}
               className="upload-file-input"
               id="upload-files"
               data-testid="upload-input"
               type="file"
               multiple
-              // @ts-expect-error - non-standard attribute to allow folder selection
-              webkitdirectory=""
-              directory=""
               onChange={(event) => {
                 const picked = Array.from(event.target.files ?? [])
                 void applyExpandedFiles(picked)
@@ -475,9 +524,42 @@ export function Upload() {
               ))}
             </ul>
           )}
+          {slugCollision?.url ? (
+            <div className="stat">
+              Existing skill:{' '}
+              <a href={slugCollision.url} className="upload-link">
+                {slugCollision.url}
+              </a>
+            </div>
+          ) : null}
         </div>
 
         <div className="card upload-panel">
+          {!isSoulMode ? (
+            <>
+              <h2 className="upload-panel-title">License</h2>
+              <div className="upload-license-card">
+                <div className="upload-license-pill">
+                  {PLATFORM_SKILL_LICENSE} · {PLATFORM_SKILL_LICENSE_NAME}
+                </div>
+                <p className="upload-license-copy">
+                  All skills published on ClawHub are licensed under {PLATFORM_SKILL_LICENSE}.{' '}
+                  {PLATFORM_SKILL_LICENSE_SUMMARY}
+                </p>
+                <label className="upload-license-check">
+                  <input
+                    type="checkbox"
+                    checked={acceptedLicenseTerms}
+                    onChange={(event) => setAcceptedLicenseTerms(event.target.checked)}
+                  />
+                  <span>
+                    I have the rights to this skill and agree to publish it under{' '}
+                    {PLATFORM_SKILL_LICENSE}.
+                  </span>
+                </label>
+              </div>
+            </>
+          ) : null}
           <label className="form-label" htmlFor="changelog">
             Changelog
           </label>

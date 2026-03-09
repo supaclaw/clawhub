@@ -1,20 +1,24 @@
 import { expect, test } from '@playwright/test'
+import { expectHealthyPage, trackRuntimeErrors } from './helpers/runtimeErrors'
 
 const navLabels = ['Skills', 'Upload', 'Import', 'Search']
 
 test('skills loads without error', async ({ page }) => {
+  const errors = trackRuntimeErrors(page)
   await page.goto('/skills', { waitUntil: 'domcontentloaded' })
-  await expect(page.locator('text=Something went wrong!')).toHaveCount(0)
   await expect(page.locator('h1', { hasText: 'Skills' })).toBeVisible()
+  await expectHealthyPage(page, errors)
 })
 
 test('souls loads without error', async ({ page }) => {
+  const errors = trackRuntimeErrors(page)
   await page.goto('/souls', { waitUntil: 'domcontentloaded' })
-  await expect(page.locator('text=Something went wrong!')).toHaveCount(0)
   await expect(page.locator('h1', { hasText: 'Souls' })).toBeVisible()
+  await expectHealthyPage(page, errors)
 })
 
 test('header menu routes render', async ({ page }) => {
+  const errors = trackRuntimeErrors(page)
   await page.goto('/', { waitUntil: 'domcontentloaded' })
 
   for (const label of navLabels) {
@@ -46,4 +50,6 @@ test('header menu routes render', async ({ page }) => {
       await expect(page.locator('h1', { hasText: 'Skills' })).toBeVisible()
     }
   }
+
+  await expectHealthyPage(page, errors)
 })

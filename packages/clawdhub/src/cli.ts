@@ -24,6 +24,13 @@ import {
 } from './cli/commands/skills.js'
 import { cmdStarSkill } from './cli/commands/star.js'
 import { cmdSync } from './cli/commands/sync.js'
+import {
+  cmdTransferAccept,
+  cmdTransferCancel,
+  cmdTransferList,
+  cmdTransferReject,
+  cmdTransferRequest,
+} from './cli/commands/transfer.js'
 import { cmdUnstarSkill } from './cli/commands/unstar.js'
 import { configureCommanderHelp, styleEnvBlock, styleTitle } from './cli/helpStyle.js'
 import { DEFAULT_REGISTRY, DEFAULT_SITE } from './cli/registry.js'
@@ -340,6 +347,59 @@ program
   .action(async (handleOrId, role, options) => {
     const opts = await resolveGlobalOpts()
     await cmdSetRole(opts, handleOrId, role, options, isInputAllowed())
+  })
+
+const transfer = program.command('transfer').description('Transfer skill ownership')
+
+transfer
+  .command('request')
+  .description('Request skill transfer to another user')
+  .argument('<slug>', 'Skill slug')
+  .argument('<handle>', 'Recipient handle (e.g., @username)')
+  .option('--message <text>', 'Optional message for recipient')
+  .option('--yes', 'Skip confirmation')
+  .action(async (slug, handle, options) => {
+    const opts = await resolveGlobalOpts()
+    await cmdTransferRequest(opts, slug, handle, options, isInputAllowed())
+  })
+
+transfer
+  .command('list')
+  .description('List pending transfer requests')
+  .option('--outgoing', 'Show outgoing transfer requests')
+  .action(async (options) => {
+    const opts = await resolveGlobalOpts()
+    await cmdTransferList(opts, options)
+  })
+
+transfer
+  .command('accept')
+  .description('Accept incoming transfer for a skill')
+  .argument('<slug>', 'Skill slug')
+  .option('--yes', 'Skip confirmation')
+  .action(async (slug, options) => {
+    const opts = await resolveGlobalOpts()
+    await cmdTransferAccept(opts, slug, options, isInputAllowed())
+  })
+
+transfer
+  .command('reject')
+  .description('Reject incoming transfer for a skill')
+  .argument('<slug>', 'Skill slug')
+  .option('--yes', 'Skip confirmation')
+  .action(async (slug, options) => {
+    const opts = await resolveGlobalOpts()
+    await cmdTransferReject(opts, slug, options, isInputAllowed())
+  })
+
+transfer
+  .command('cancel')
+  .description('Cancel outgoing transfer for a skill')
+  .argument('<slug>', 'Skill slug')
+  .option('--yes', 'Skip confirmation')
+  .action(async (slug, options) => {
+    const opts = await resolveGlobalOpts()
+    await cmdTransferCancel(opts, slug, options, isInputAllowed())
   })
 
 program

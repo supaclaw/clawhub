@@ -3,6 +3,8 @@
 ## Unreleased
 
 ### Added
+- API: add structured skill moderation responses plus `GET /api/v1/skills/{slug}/moderation` with redacted public evidence and full owner/staff detail (#334) (thanks @ArthurzKV).
+- Moderation: persist structured moderation snapshots (static scan + VT/LLM merged verdict, reason codes, and evidence) on skills and versions (#333) (thanks @ArthurzKV).
 - Moderation: add comment reporting with per-user active report caps, unique reporter/target enforcement, and auto-hide on the 4th unique report.
 - Moderation: add AI-driven comment scam backfill (`commentModeration:*`) with persisted verdict/confidence/explainer metadata and strict auto-ban for `certain_scam` + `high` confidence.
 - Admin: add manual unban for banned users (clears `deletedAt` + `banReason`, audit log entry). Revoked API tokens stay revoked.
@@ -14,6 +16,7 @@
 - CI/Security: add TruffleHog pull-request scanning for verified leaked credentials (#505) (thanks @akses0).
 
 ### Changed
+- Skills: make published skill licensing explicit and fixed to MIT-0; require publish consent, surface no-attribution messaging in web/CLI/API, and remove per-skill license metadata.
 - Security/docs: document comment reporting/auto-hide behavior alongside existing skill reporting rules.
 - Security/moderation: add bounded explainable auto-ban reasons for scam comments and protect moderator/admin accounts from automated bans.
 - Moderation: banning users now also soft-deletes their authored comments (skill + soul), including legacy cleanup on re-ban.
@@ -28,10 +31,22 @@
 - Search/listing performance: cut embedding hydration and badge read bandwidth via `embeddingSkillMap` + denormalized skill badges; shift stat-doc sync to low-frequency cron (#441) (thanks @sethconvex).
 
 ### Fixed
+- Skills/Web: debounce search URL updates on `/skills` to keep typing responsive, and cancel stale pending navigations on external query changes (#587) (thanks @neeravmakwana).
+- Upload: keep folder-picking enabled after page refresh by reapplying `webkitdirectory`/`directory` on the file input ref (#551) (thanks @MunemHashmi).
+- Moderation: remove over-broad keyword flags for common auth/payment/crypto terms so legitimate skills stop tripping regex prefilters (#273) (thanks @superlowburn).
 - Skills hard-delete: delete `commentReports` rows during moderation cleanup to avoid orphaned report records.
 - Comments: hide entries authored by deleted/deactivated users in `comments:listBySkill`.
 - Admin API: `POST /api/v1/users/reclaim` now performs non-destructive root-slug owner transfer
   (preserves existing skill versions/stats/metadata) and clears active slug reservations.
+- VirusTotal: use shared AV-engine fallback verdict mapping for pending/backfill flows and keep undetected-only results pending (#591) (thanks @Shuai-DaiDai).
+- Skills/listing: keep non-suspicious browse pagination on one cursor family during `isSuspicious` backfill, and re-sync stale `latestVersionSummary` metadata fields (#572) (thanks @sethconvex).
+- PWA: update `manifest.json` branding so installed apps show the correct ClawHub name (#569) (thanks @Glucksberg).
+- Search/tests: cover soft-deleted skill filtering in vector hydration and lexical exact-slug fallback (#552) (thanks @MunemHashmi).
+- Docs/dev: fix local setup instructions for Node support, Convex env vars, frontend port, and post-seed stats refresh (#584) (thanks @jack-piplabs).
+- Docs/CLI: fix `explore` flag list indentation so `--limit` renders correctly in the command reference (#601) (thanks @gandli).
+- CLI publish: use a longer multipart upload timeout and normalize abort rejections into proper Errors (#550) (thanks @MunemHashmi).
+- CLI: forward optional auth tokens for `search` and `explore` against authenticated registries (#608) (thanks @artdaal).
+- Skill metadata: parse top-level `requires.*`, `primaryEnv`, and homepage fallbacks for security review accuracy (#548) (thanks @MunemHashmi).
 - Users: sync handle on ensure when GitHub login changes (#293) (thanks @christianhpoe).
 - Users/Auth: throttle GitHub profile sync on login; also sync avatar when it changes (#312) (thanks @ianalloway).
 - Upload gate: fetch GitHub account age by immutable account ID (prevents username swaps) (#116) (thanks @mkrokosz).

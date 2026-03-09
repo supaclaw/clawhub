@@ -1,4 +1,5 @@
 import { type } from 'arktype';
+import { SkillPlatformLicenseSchema } from './license.js';
 export const GlobalConfigSchema = type({
     registry: 'string',
     token: 'string?',
@@ -67,6 +68,7 @@ export const CliPublishRequestSchema = type({
     displayName: 'string',
     version: 'string',
     changelog: 'string',
+    acceptLicenseTerms: 'boolean?',
     tags: 'string[]?',
     source: PublishSourceSchema.optional(),
     forkOf: type({
@@ -110,6 +112,16 @@ export const ApiV1WhoamiResponseSchema = type({
         image: 'string|null?',
     },
 });
+export const ApiV1UserSearchResponseSchema = type({
+    items: type({
+        userId: 'string',
+        handle: 'string|null',
+        displayName: 'string|null?',
+        name: 'string|null?',
+        role: '"admin"|"moderator"|"user"|null?',
+    }).array(),
+    total: 'number',
+});
 export const ApiV1SearchResponseSchema = type({
     results: type({
         slug: 'string?',
@@ -133,6 +145,7 @@ export const ApiV1SkillListResponseSchema = type({
             version: 'string',
             createdAt: 'number',
             changelog: 'string',
+            license: SkillPlatformLicenseSchema.or('null').optional(),
         }).optional(),
     }).array(),
     nextCursor: 'string|null',
@@ -151,11 +164,43 @@ export const ApiV1SkillResponseSchema = type({
         version: 'string',
         createdAt: 'number',
         changelog: 'string',
+        license: SkillPlatformLicenseSchema.or('null').optional(),
     }).or('null'),
     owner: type({
         handle: 'string|null',
         displayName: 'string|null?',
         image: 'string|null?',
+    }).or('null'),
+    moderation: type({
+        isSuspicious: 'boolean',
+        isMalwareBlocked: 'boolean',
+        verdict: '"clean"|"suspicious"|"malicious"?',
+        reasonCodes: 'string[]?',
+        updatedAt: 'number|null?',
+        engineVersion: 'string|null?',
+        summary: 'string|null?',
+    })
+        .or('null')
+        .optional(),
+});
+export const ApiV1SkillModerationResponseSchema = type({
+    moderation: type({
+        isSuspicious: 'boolean',
+        isMalwareBlocked: 'boolean',
+        verdict: '"clean"|"suspicious"|"malicious"',
+        reasonCodes: 'string[]',
+        updatedAt: 'number|null?',
+        engineVersion: 'string|null?',
+        summary: 'string|null?',
+        legacyReason: 'string|null?',
+        evidence: type({
+            code: 'string',
+            severity: '"info"|"warn"|"critical"',
+            file: 'string',
+            line: 'number',
+            message: 'string',
+            evidence: 'string',
+        }).array(),
     }).or('null'),
 });
 export const ApiV1SkillVersionListResponseSchema = type({
@@ -167,13 +212,21 @@ export const ApiV1SkillVersionListResponseSchema = type({
     }).array(),
     nextCursor: 'string|null',
 });
+export const SecurityStatusSchema = type({
+    status: '"clean" | "suspicious" | "malicious" | "pending" | "error"',
+    hasWarnings: 'boolean',
+    checkedAt: 'number|null',
+    model: 'string|null',
+});
 export const ApiV1SkillVersionResponseSchema = type({
     version: type({
         version: 'string',
         createdAt: 'number',
         changelog: 'string',
         changelogSource: '"auto"|"user"|null?',
+        license: SkillPlatformLicenseSchema.or('null').optional(),
         files: 'unknown?',
+        security: SecurityStatusSchema.optional(),
     }).or('null'),
     skill: type({
         slug: 'string',
@@ -191,6 +244,39 @@ export const ApiV1PublishResponseSchema = type({
 });
 export const ApiV1DeleteResponseSchema = type({
     ok: 'true',
+});
+export const ApiV1TransferRequestResponseSchema = type({
+    ok: 'true',
+    transferId: 'string',
+    toUserHandle: 'string',
+    expiresAt: 'number',
+});
+export const ApiV1TransferDecisionResponseSchema = type({
+    ok: 'true',
+    skillSlug: 'string?',
+});
+export const ApiV1TransferListResponseSchema = type({
+    transfers: type({
+        _id: 'string',
+        skill: type({
+            _id: 'string',
+            slug: 'string',
+            displayName: 'string',
+        }),
+        fromUser: type({
+            _id: 'string',
+            handle: 'string|null',
+            displayName: 'string|null',
+        }).optional(),
+        toUser: type({
+            _id: 'string',
+            handle: 'string|null',
+            displayName: 'string|null',
+        }).optional(),
+        message: 'string?',
+        requestedAt: 'number',
+        expiresAt: 'number',
+    }).array(),
 });
 export const ApiV1SetRoleResponseSchema = type({
     ok: 'true',
@@ -231,6 +317,24 @@ export const ClawdisRequiresSchema = type({
     env: 'string[]?',
     config: 'string[]?',
 });
+export const EnvVarDeclarationSchema = type({
+    name: 'string',
+    required: 'boolean?',
+    description: 'string?',
+});
+export const DependencyDeclarationSchema = type({
+    name: 'string',
+    type: '"pip"|"npm"|"brew"|"go"|"cargo"|"apt"|"other"',
+    version: 'string?',
+    url: 'string?',
+    repository: 'string?',
+});
+export const SkillLinksSchema = type({
+    homepage: 'string?',
+    repository: 'string?',
+    documentation: 'string?',
+    changelog: 'string?',
+});
 export const ClawdisSkillMetadataSchema = type({
     always: 'boolean?',
     skillKey: 'string?',
@@ -243,5 +347,11 @@ export const ClawdisSkillMetadataSchema = type({
     install: SkillInstallSpecSchema.array().optional(),
     nix: NixPluginSpecSchema.optional(),
     config: ClawdbotConfigSpecSchema.optional(),
+    envVars: EnvVarDeclarationSchema.array().optional(),
+    dependencies: DependencyDeclarationSchema.array().optional(),
+    author: 'string?',
+    links: SkillLinksSchema.optional(),
 });
+// If this line errors, ClawdisSkillMetadata is out of sync with ClawdisSkillMetadataSchema
+const _clawdisKeysCheck = true;
 //# sourceMappingURL=schemas.js.map
