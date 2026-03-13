@@ -172,13 +172,35 @@ describe('digestToOwnerInfo', () => {
     const digest = {
       ownerUserId: 'users:owner' as never,
       ownerHandle: '',
+      ownerName: 'No Handle User',
+      ownerDisplayName: 'No Handle',
+      ownerImage: 'https://example.com/avatar.png',
+    }
+    const result = digestToOwnerInfo(digest)
+    expect(result).not.toBeNull()
+    expect(result!.ownerHandle).toBe('users:owner')
+    expect(result!.owner).toEqual({
+      _id: 'users:owner',
+      _creationTime: 0,
+      handle: undefined,
+      name: 'No Handle User',
+      displayName: 'No Handle',
+      image: 'https://example.com/avatar.png',
+      bio: undefined,
+    })
+  })
+
+  it('returns null owner for deactivated user (empty handle, no profile data)', () => {
+    const digest = {
+      ownerUserId: 'users:deactivated' as never,
+      ownerHandle: '',
       ownerName: undefined,
       ownerDisplayName: undefined,
       ownerImage: undefined,
     }
     const result = digestToOwnerInfo(digest)
     expect(result).not.toBeNull()
-    expect(result!.ownerHandle).toBe('users:owner')
+    expect(result!.ownerHandle).toBe('users:deactivated')
     expect(result!.owner).toBeNull()
   })
 })

@@ -92,13 +92,20 @@ export function digestToOwnerInfo(
   digest: Pick<Doc<'skillSearchDigest'>, 'ownerHandle' | 'ownerName' | 'ownerDisplayName' | 'ownerImage' | 'ownerUserId'>,
 ): { ownerHandle: string | null; owner: PublicUser | null } | null {
   if (digest.ownerHandle === undefined) return null
-  // Empty string means backfilled but owner has no handle (or is deactivated).
+  // Empty string means backfilled but owner has no handle.
   // Use userId as fallback handle, matching the live getOwnerInfo path.
-  const handle = digest.ownerHandle || null
+  const handle = digest.ownerHandle || undefined
   const fallbackHandle = handle ?? String(digest.ownerUserId)
+  // Determine if we have real profile data (deactivated/deleted owners have
+  // all profile fields undefined, while handle-less visible owners still have
+  // name/displayName/image populated).
+  const hasProfileData =
+    digest.ownerName !== undefined ||
+    digest.ownerDisplayName !== undefined ||
+    digest.ownerImage !== undefined
   return {
     ownerHandle: fallbackHandle,
-    owner: handle
+    owner: (handle || hasProfileData)
       ? {
           _id: digest.ownerUserId,
           _creationTime: 0,
