@@ -9,6 +9,7 @@ RUN apt-get update && apt-get install -y \
   build-essential \
   pkg-config \
   openssl \
+  zip \
   && rm -rf /var/lib/apt/lists/*
 
 ENV BUN_INSTALL=/root/.bun
@@ -18,7 +19,9 @@ RUN curl -fsSL https://bun.sh/install | bash
 
 WORKDIR /app
 
-COPY package.json ./
+COPY package.json bun.lock ./
+COPY packages/schema/package.json ./packages/schema/package.json
+COPY packages/clawdhub/package.json ./packages/clawdhub/package.json
 
 RUN bun install --frozen-lockfile || bun install
 
