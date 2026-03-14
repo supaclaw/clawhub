@@ -21,7 +21,7 @@ import { v } from 'convex/values'
 import { internal } from './_generated/api'
 import type { Doc, Id } from './_generated/dataModel'
 import type { MutationCtx } from './_generated/server'
-import { internalAction, internalMutation, internalQuery } from './_generated/server'
+import { internalAction, internalMutation, internalQuery } from './functions'
 import { applySkillStatDeltas, bumpDailySkillStats } from './lib/skillStats'
 
 /**

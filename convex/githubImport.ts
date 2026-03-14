@@ -4,7 +4,7 @@ import semver from 'semver'
 import { api, internal } from './_generated/api'
 import type { Id } from './_generated/dataModel'
 import type { ActionCtx } from './_generated/server'
-import { action } from './_generated/server'
+import { action } from './functions'
 import { requireUserFromAction } from './lib/access'
 import {
   buildGitHubImportFileList,

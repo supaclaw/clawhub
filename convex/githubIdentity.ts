@@ -1,5 +1,5 @@
 import { v } from 'convex/values'
-import { internalQuery } from './_generated/server'
+import { internalQuery } from './functions'
 import { getGitHubProviderAccountId } from './lib/githubIdentity'
 
 export const getGitHubProviderAccountIdInternal = internalQuery({

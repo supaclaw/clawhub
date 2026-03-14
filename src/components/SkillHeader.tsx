@@ -19,6 +19,8 @@ export type SkillModerationInfo = {
   isSuspicious: boolean
   isHiddenByMod: boolean
   isRemoved: boolean
+  overrideActive?: boolean
+  verdict?: 'clean' | 'suspicious' | 'malicious'
   reason?: string
 }
 
@@ -112,6 +114,15 @@ export function SkillHeader({
   osLabels,
 }: SkillHeaderProps) {
   const formattedStats = formatSkillStatsTriplet(skill.stats)
+  const suppressScanResults =
+    !isStaff &&
+    Boolean(modInfo?.overrideActive) &&
+    !modInfo?.isMalwareBlocked &&
+    !modInfo?.isSuspicious
+  const overrideScanMessage =
+    suppressScanResults
+      ? 'Security findings were reviewed by staff and cleared for public use.'
+      : null
 
   return (
     <>
@@ -255,12 +266,17 @@ export function SkillHeader({
                   </Link>
                 ) : null}
               </div>
-              <SecurityScanResults
-                sha256hash={latestVersion?.sha256hash}
-                vtAnalysis={latestVersion?.vtAnalysis}
-                llmAnalysis={latestVersion?.llmAnalysis as LlmAnalysis | undefined}
-              />
-              {latestVersion?.sha256hash || latestVersion?.llmAnalysis ? (
+              {suppressScanResults ? (
+                <div className="skill-hero-note">{overrideScanMessage}</div>
+              ) : latestVersion?.sha256hash || latestVersion?.llmAnalysis || (latestVersion?.staticScan?.findings?.length ?? 0) > 0 ? (
+                <SecurityScanResults
+                  sha256hash={latestVersion?.sha256hash}
+                  vtAnalysis={latestVersion?.vtAnalysis}
+                  llmAnalysis={latestVersion?.llmAnalysis as LlmAnalysis | undefined}
+                  staticFindings={latestVersion?.staticScan?.findings}
+                />
+              ) : null}
+              {!suppressScanResults && (latestVersion?.sha256hash || latestVersion?.llmAnalysis || (latestVersion?.staticScan?.findings?.length ?? 0) > 0) ? (
                 <p className="scan-disclaimer">
                   Like a lobster shell, security has layers — review code before you run it.
                 </p>

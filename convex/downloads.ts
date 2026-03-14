@@ -1,6 +1,6 @@
 import { v } from 'convex/values'
 import { api, internal } from './_generated/api'
-import { httpAction, internalMutation, mutation } from './_generated/server'
+import { httpAction, internalMutation, mutation } from './functions'
 import { getOptionalApiTokenUserId } from './lib/apiTokenAuth'
 import { applyRateLimit, getClientIp } from './lib/httpRateLimit'
 import { corsHeaders, mergeHeaders } from './lib/httpHeaders'

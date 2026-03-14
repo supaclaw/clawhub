@@ -1,4 +1,4 @@
-import { httpAction } from './_generated/server'
+import { httpAction } from './functions'
 import { corsHeaders, mergeHeaders } from './lib/httpHeaders'
 
 function getHeader(request: Request, name: string) {

@@ -11,6 +11,7 @@ const insertVersionHandler = (insertVersion as unknown as WrappedHandler<Record<
 describe('souls.insertVersion', () => {
   it('throws a soul-specific ownership error for non-owners', async () => {
     const db = {
+      normalizeId: vi.fn(),
       get: vi.fn(async (id: string) => {
         if (id === 'users:caller') return { _id: 'users:caller', deletedAt: undefined }
         return null

@@ -1,38 +1,58 @@
 # Changelog
 
-## Unreleased
+## 0.9.0 - Unreleased
+
+### Fixed
+- Visibility/API: prevent skills owned by deleted/banned users from showing up in public detail pages, browse/search results, or version API routes.
+
+## 0.8.0 - 2026-03-13
 
 ### Added
+- Skills/Web: show skill owner avatar + handle on skill cards, lists, and detail pages (#312) (thanks @ianalloway).
+- Skills/Web: add file viewer for skill version files on detail page (#44) (thanks @regenrek).
+- CLI: add `uninstall` command for skills (#241) (thanks @superlowburn).
+- Skills/API/CLI: add ownership transfer workflow with request/list/accept/reject/cancel flows.
+- Skills/Web/API: surface platform/architecture labels and security evaluation results in v1 + inspect views (#499, #362).
 - API: add structured skill moderation responses plus `GET /api/v1/skills/{slug}/moderation` with redacted public evidence and full owner/staff detail (#334) (thanks @ArthurzKV).
 - Moderation: persist structured moderation snapshots (static scan + VT/LLM merged verdict, reason codes, and evidence) on skills and versions (#333) (thanks @ArthurzKV).
+- API: add scan security verification endpoint and non-suspicious filters (#820).
+- Users: add `trustedPublisher` flag and admin mutations to bypass pending-scan auto-hide for trusted publishers (#298) (thanks @autogame-17).
 - Moderation: add comment reporting with per-user active report caps, unique reporter/target enforcement, and auto-hide on the 4th unique report.
 - Moderation: add AI-driven comment scam backfill (`commentModeration:*`) with persisted verdict/confidence/explainer metadata and strict auto-ban for `certain_scam` + `high` confidence.
 - Admin: add manual unban for banned users (clears `deletedAt` + `banReason`, audit log entry). Revoked API tokens stay revoked.
 - Admin: bulk restore skills from GitHub backup; reclaim squatted slugs via v1 endpoints + internal tooling (#298) (thanks @autogame-17).
-- Users: add `trustedPublisher` flag and admin mutations to bypass pending-scan auto-hide for trusted publishers (#298) (thanks @autogame-17).
-- Skills/Web: show skill owner avatar + handle on skill cards, lists, and detail pages (#312) (thanks @ianalloway).
-- Skills/Web: add file viewer for skill version files on detail page (#44) (thanks @regenrek).
-- CLI: add `uninstall` command for skills (#241) (thanks @superlowburn).
+- Moderation/Admin: add manual override audit tools for suspicious-skill review.
 - CI/Security: add TruffleHog pull-request scanning for verified leaked credentials (#505) (thanks @akses0).
 
 ### Changed
 - Skills: make published skill licensing explicit and fixed to MIT-0; require publish consent, surface no-attribution messaging in web/CLI/API, and remove per-skill license metadata.
+- Skill metadata: support env vars, dependency declarations, author, and links in parsed manifest metadata + install UI (#360) (thanks @mahsumaktas).
+- Rate limiting: apply authenticated quotas by user bucket (vs shared IP), emit delay-based reset headers, and improve CLI 429 guidance/retries (#412) (thanks @lc0rp).
+- Skills: reserve deleted slugs for prior owners (90-day cooldown) to prevent squatting; add admin reclaim flow (#298) (thanks @autogame-17).
+- Moderation: ban flow soft-deletes owned skills (reversible) and removes them from vector search (#298) (thanks @autogame-17).
 - Security/docs: document comment reporting/auto-hide behavior alongside existing skill reporting rules.
 - Security/moderation: add bounded explainable auto-ban reasons for scam comments and protect moderator/admin accounts from automated bans.
 - Moderation: banning users now also soft-deletes their authored comments (skill + soul), including legacy cleanup on re-ban.
-- Skill metadata: support env vars, dependency declarations, author, and links in parsed manifest metadata + install UI (#360) (thanks @mahsumaktas).
 - Quality gate: language-aware word counting (`Intl.Segmenter`) and new `cjkChars` signal to reduce false rejects for non-Latin docs.
 - Jobs: run skill stat event processing every 5 minutes (was 15).
+- Deploy: add frontend/backend drift detection plus hardened production smoke/deploy checks.
 - API performance: batch resolve skill/soul tags in v1 list/get endpoints (fewer action->query round-trips) (#112) (thanks @mkrokosz).
-- Skills: reserve deleted slugs for prior owners (90-day cooldown) to prevent squatting; add admin reclaim flow (#298) (thanks @autogame-17).
-- Moderation: ban flow soft-deletes owned skills (reversible) and removes them from vector search (#298) (thanks @autogame-17).
 - LLM helpers: centralize OpenAI Responses text extraction for changelog/summary/eval flows (#502) (thanks @ianalloway).
-- Rate limiting: apply authenticated quotas by user bucket (vs shared IP), emit delay-based reset headers, and improve CLI 429 guidance/retries (#412) (thanks @lc0rp).
 - Search/listing performance: cut embedding hydration and badge read bandwidth via `embeddingSkillMap` + denormalized skill badges; shift stat-doc sync to low-frequency cron (#441) (thanks @sethconvex).
+- Search/listing performance: move public browse/search hydration onto `skillSearchDigest`, add non-suspicious index paths, and split trending rebuilds to stay under Convex document limits.
 
 ### Fixed
+- API: accept legacy CLI publish payloads during the v1 migration (#815).
+- Auth/UI: surface OAuth callback failures in the web UI instead of swallowing them (#688).
+- Skills: allow ownership healing when the previous owner was deleted/banned, and sanitize owner data in public payloads (#689, #793).
 - Skills/Web: debounce search URL updates on `/skills` to keep typing responsive, and cancel stale pending navigations on external query changes (#587) (thanks @neeravmakwana).
 - Upload: keep folder-picking enabled after page refresh by reapplying `webkitdirectory`/`directory` on the file input ref (#551) (thanks @MunemHashmi).
+- CLI publish: use a longer multipart upload timeout and normalize abort rejections into proper Errors (#550) (thanks @MunemHashmi).
+- CLI: forward optional auth tokens for `search` and `explore` against authenticated registries (#608) (thanks @artdaal).
+- CLI: respect `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY` env vars for outbound registry requests, with troubleshooting docs (#363) (thanks @kerrypotter).
+- CLI: preserve registry base paths when composing API URLs for search/inspect/moderation commands (#486) (thanks @Liknox).
+- CLI: show manual URL guidance when automatic browser opening is unavailable; add regression tests for opener errors (#163) (thanks @aronchick).
+- API/CLI: expose skill security status in version inspect output, with schema wiring and CLI regression coverage (#362) (thanks @abutbul).
 - Moderation: remove over-broad keyword flags for common auth/payment/crypto terms so legitimate skills stop tripping regex prefilters (#273) (thanks @superlowburn).
 - Skills hard-delete: delete `commentReports` rows during moderation cleanup to avoid orphaned report records.
 - Comments: hide entries authored by deleted/deactivated users in `comments:listBySkill`.
@@ -44,8 +64,6 @@
 - Search/tests: cover soft-deleted skill filtering in vector hydration and lexical exact-slug fallback (#552) (thanks @MunemHashmi).
 - Docs/dev: fix local setup instructions for Node support, Convex env vars, frontend port, and post-seed stats refresh (#584) (thanks @jack-piplabs).
 - Docs/CLI: fix `explore` flag list indentation so `--limit` renders correctly in the command reference (#601) (thanks @gandli).
-- CLI publish: use a longer multipart upload timeout and normalize abort rejections into proper Errors (#550) (thanks @MunemHashmi).
-- CLI: forward optional auth tokens for `search` and `explore` against authenticated registries (#608) (thanks @artdaal).
 - Skill metadata: parse top-level `requires.*`, `primaryEnv`, and homepage fallbacks for security review accuracy (#548) (thanks @MunemHashmi).
 - Users: sync handle on ensure when GitHub login changes (#293) (thanks @christianhpoe).
 - Users/Auth: throttle GitHub profile sync on login; also sync avatar when it changes (#312) (thanks @ianalloway).
@@ -63,13 +81,34 @@
 - Web: align `/skills` total count with public visibility and format header count (thanks @rknoche6, #76).
 - Skills/Web: centralize public visibility checks and keep `globalStats` skill counts in sync incrementally; remove duplicate `/skills` default-sort fallback and share browse test mocks (thanks @rknoche6, #76).
 - Moderation: clear stale `flagged.suspicious` flags when VirusTotal rescans improve to clean verdicts (#418) (thanks @Phineas1500).
-- CLI: respect `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY` env vars for outbound registry requests, with troubleshooting docs (#363) (thanks @kerrypotter).
-- CLI: preserve registry base paths when composing API URLs for search/inspect/moderation commands (#486) (thanks @Liknox).
 - API tests: lock `Retry-After` behavior to relative-delay semantics for v1 search 429s (#421) (thanks @apoorvdarshan).
 - CLI tests: assert 5xx HTTP responses still perform retry attempts before surfacing final error (#457) (thanks @YonghaoZhao722).
 - GitHub import: improve storage/publish failure errors with actionable context; add regression tests for error formatting (#512) (thanks @vassiliylakhonin).
-- CLI: show manual URL guidance when automatic browser opening is unavailable; add regression tests for opener errors (#163) (thanks @aronchick).
-- API/CLI: expose skill security status in version inspect output, with schema wiring and CLI regression coverage (#362) (thanks @abutbul).
+
+## 0.7.0 - 2026-02-16
+
+Reconstructed from the `clawhub@0.7.0` npm publish timestamp (`2026-02-16T05:02:25Z`) and the repo version bump commit (`e352309`).
+
+### Added
+- Skills/Web: show owner avatars/handles across cards, lists, and detail pages (#312) (thanks @ianalloway).
+- Skills/Web: add version file viewer on skill detail pages (#44) (thanks @regenrek).
+- CLI: add `uninstall` for installed skills (#241) (thanks @superlowburn).
+- Skills/Web: add non-suspicious browse filter, downloads-first browse defaults, and popular non-suspicious homepage sections.
+- Web: compact-format skill and soul stats, plus split page models for skills/detail rendering.
+- Skills: auto-generate missing summaries and add a resumable/self-scheduling summary backfill job.
+- Moderation/Admin: add anti-spam publish caps, trust-tier quality checks, empty-skill cleanup tooling, and stronger moderator UX.
+
+### Changed
+- HTTP/CLI: centralize CORS handling and allow tokenized owner-visible reads through the CLI (#296, #297).
+- API performance: batch resolve tags in v1 list/get flows to cut action-to-query round-trips (#112) (thanks @mkrokosz).
+- Quality gate: add language-aware word counting and tighten spam/quarantine handling around publish flows.
+
+### Fixed
+- Skills/Web: fix initial sort wiring, keep global ordering across pagination, prevent pagination dead-ends/flicker, and harden cursor recovery (#92, #98, #339).
+- CLI: normalize abort/timeout errors, secure config-file permissions, clarify logout semantics, and prefer `$HOME` for path resolution (#164, #166, #283, #286, #299).
+- API: return correct delete/undelete status codes and clearer soft-delete/owner-visible error responses (#35) (thanks @sergical).
+- Upload/Auth: gate publish ownership by immutable GitHub account ID and handle duplicate auth-user records safely.
+- Downloads/Search: harden download dedupe/rate limiting, improve SSR host awareness, and fix homepage/search regressions under legacy data.
 
 ## 0.6.1 - 2026-02-13
 

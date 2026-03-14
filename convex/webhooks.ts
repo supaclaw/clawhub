@@ -1,5 +1,5 @@
 import { v } from 'convex/values'
-import { internalAction } from './_generated/server'
+import { internalAction } from './functions'
 import { buildDiscordPayload, getWebhookConfig, shouldSendWebhook } from './lib/webhooks'
 
 export const sendDiscordWebhook = internalAction({

@@ -1,12 +1,21 @@
 import type { Id } from '../_generated/dataModel'
 import type { MutationCtx, QueryCtx } from '../_generated/server'
+import { isSkillSuspicious } from './skillSafety'
 
 const DAY_MS = 24 * 60 * 60 * 1000
 export const TRENDING_DAYS = 7
+export const TRENDING_LEADERBOARD_KIND = 'trending'
+export const TRENDING_NON_SUSPICIOUS_LEADERBOARD_KIND = 'trending_non_suspicious'
 
-type LeaderboardEntry = {
+export type LeaderboardEntry = {
   skillId: Id<'skills'>
   score: number
+  installs: number
+  downloads: number
+}
+
+type DailyTrendingRow = {
+  skillId: Id<'skills'>
   installs: number
   downloads: number
 }
@@ -21,25 +30,16 @@ export function getTrendingRange(now: number) {
   return { startDay, endDay }
 }
 
-export async function buildTrendingLeaderboard(
-  ctx: QueryCtx | MutationCtx,
-  params: { limit: number; now?: number },
-) {
-  const now = params.now ?? Date.now()
-  const { startDay, endDay } = getTrendingRange(now)
+export async function queryDailyStats(ctx: QueryCtx | MutationCtx, day: number) {
+  return ctx.db
+    .query('skillDailyStats')
+    .withIndex('by_day', (q) => q.eq('day', day))
+    .collect()
+}
 
-  // Query one day at a time to stay well under the 32K document limit.
-  // Each daily query reads ~4,500 docs instead of 32K for the full 7-day range.
-  // Parallelized since there are no cross-day dependencies.
-  const dayKeys = Array.from({ length: endDay - startDay + 1 }, (_, i) => startDay + i)
-  const perDayRows = await Promise.all(
-    dayKeys.map((day) =>
-      ctx.db
-        .query('skillDailyStats')
-        .withIndex('by_day', (q) => q.eq('day', day))
-        .collect(),
-    ),
-  )
+export function buildTrendingEntriesFromDailyRows(
+  perDayRows: DailyTrendingRow[][],
+) {
   const totals = new Map<Id<'skills'>, { installs: number; downloads: number }>()
   for (const rows of perDayRows) {
     for (const row of rows) {
@@ -57,20 +57,44 @@ export async function buildTrendingLeaderboard(
     score: totalsEntry.installs,
   }))
 
-  const items = topN(entries, params.limit, compareTrendingEntries).sort((a, b) =>
-    compareTrendingEntries(b, a),
-  )
+  entries.sort((a, b) => compareTrendingEntries(b, a))
 
-  return { startDay, endDay, items }
+  return entries
 }
 
-function compareTrendingEntries(a: LeaderboardEntry, b: LeaderboardEntry) {
+export function takeTopTrendingEntries(
+  entries: LeaderboardEntry[],
+  limit: number,
+) {
+  return topN(entries, limit, compareTrendingEntries).sort((a, b) =>
+    compareTrendingEntries(b, a),
+  )
+}
+
+export async function takeTopNonSuspiciousTrendingEntries(
+  ctx: QueryCtx | MutationCtx,
+  entries: LeaderboardEntry[],
+  limit: number,
+) {
+  const items: LeaderboardEntry[] = []
+
+  for (const entry of entries) {
+    const skill = await ctx.db.get(entry.skillId)
+    if (!skill || skill.softDeletedAt || isSkillSuspicious(skill)) continue
+    items.push(entry)
+    if (items.length >= limit) break
+  }
+
+  return items
+}
+
+export function compareTrendingEntries(a: LeaderboardEntry, b: LeaderboardEntry) {
   if (a.score !== b.score) return a.score - b.score
   if (a.downloads !== b.downloads) return a.downloads - b.downloads
   return 0
 }
 
-function topN<T>(entries: T[], limit: number, compare: (a: T, b: T) => number) {
+export function topN<T>(entries: T[], limit: number, compare: (a: T, b: T) => number) {
   if (entries.length <= limit) return entries.slice()
 
   const heap: T[] = []

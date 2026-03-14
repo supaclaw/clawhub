@@ -48,25 +48,20 @@ describe('skills.listPublicPageV2', () => {
   })
 
   it('applies highlightedOnly and nonSuspiciousOnly together', async () => {
+    // Keep pagination on the base sort index and apply both filters in JS while
+    // `isSuspicious` is still being backfilled on existing rows.
     const highlightedClean = makeSkill('skills:hl-clean', 'hl-clean', 'users:1', 'skillVersions:1')
     const plainClean = makeSkill('skills:plain', 'plain', 'users:2', 'skillVersions:2')
-    const highlightedSuspicious = makeSkill(
-      'skills:hl-suspicious',
-      'hl-suspicious',
-      'users:3',
-      'skillVersions:3',
-      ['flagged.suspicious'],
-    )
 
     const paginateMock = vi.fn().mockResolvedValue({
-      page: [highlightedClean, plainClean, highlightedSuspicious],
+      page: [highlightedClean, plainClean],
       continueCursor: 'next-cursor',
       isDone: false,
       pageStatus: null,
       splitCursor: null,
     })
     const orderMock = vi.fn(() => ({ paginate: paginateMock }))
-    const eqMock = vi.fn(() => ({}))
+    const eqMock = vi.fn(() => ({ eq: eqMock }))
     const withIndexMock = vi.fn((_index: string, builder: (q: { eq: typeof eqMock }) => unknown) => {
       builder({ eq: eqMock })
       return { order: orderMock }
@@ -79,7 +74,7 @@ describe('skills.listPublicPageV2', () => {
     const ctx = {
       db: {
         query: vi.fn((table: string) => {
-          if (table !== 'skills') throw new Error(`unexpected table ${table}`)
+          if (table !== 'skillSearchDigest') throw new Error(`unexpected table ${table}`)
           return { withIndex: withIndexMock }
         }),
         get: getMock,
@@ -101,28 +96,17 @@ describe('skills.listPublicPageV2', () => {
     expect(withIndexMock).toHaveBeenCalledWith('by_active_stats_downloads', expect.any(Function))
     expect(orderMock).toHaveBeenCalledWith('desc')
     expect(paginateMock).toHaveBeenCalledWith({ cursor: null, numItems: 25 })
-    expect(eqMock).toHaveBeenCalledWith('softDeletedAt', undefined)
   })
 
-  it('skips fully filtered pages until it finds matching skills', async () => {
+  it('returns empty filtered page without multi-paginate when no rows match', async () => {
     const plain = makeSkill('skills:plain', 'plain', 'users:1', 'skillVersions:1')
-    const highlightedClean = makeSkill('skills:hl-clean', 'hl-clean', 'users:2', 'skillVersions:2')
-    const paginateMock = vi
-      .fn()
-      .mockResolvedValueOnce({
-        page: [plain],
-        continueCursor: 'next-cursor',
-        isDone: false,
-        pageStatus: null,
-        splitCursor: null,
-      })
-      .mockResolvedValueOnce({
-        page: [highlightedClean],
-        continueCursor: 'after-highlighted',
-        isDone: false,
-        pageStatus: null,
-        splitCursor: null,
-      })
+    const paginateMock = vi.fn().mockResolvedValueOnce({
+      page: [plain],
+      continueCursor: 'next-cursor',
+      isDone: false,
+      pageStatus: null,
+      splitCursor: null,
+    })
     const ctx = {
       db: {
         query: vi.fn(() => ({
@@ -130,11 +114,7 @@ describe('skills.listPublicPageV2', () => {
             order: vi.fn(() => ({ paginate: paginateMock })),
           })),
         })),
-        get: vi.fn(async (id: string) => {
-          if (id.startsWith('users:')) return makeUser(id)
-          if (id.startsWith('skillVersions:')) return makeVersion(id)
-          return null
-        }),
+        get: vi.fn(),
       },
     }
 
@@ -146,13 +126,10 @@ describe('skills.listPublicPageV2', () => {
       nonSuspiciousOnly: false,
     })
 
-    expect(result.page).toHaveLength(1)
-    expect(result.page[0]?.skill.slug).toBe('hl-clean')
-    expect(result.continueCursor).toBe('after-highlighted')
+    expect(result.page).toEqual([])
+    expect(result.continueCursor).toBe('next-cursor')
     expect(result.isDone).toBe(false)
-    expect(paginateMock).toHaveBeenCalledTimes(2)
-    expect(paginateMock).toHaveBeenNthCalledWith(1, { cursor: null, numItems: 25 })
-    expect(paginateMock).toHaveBeenNthCalledWith(2, { cursor: 'next-cursor', numItems: 25 })
+    expect(paginateMock).toHaveBeenCalledTimes(1)
   })
 
   it('returns exhausted when filtered pages remain empty to the end', async () => {
@@ -189,31 +166,22 @@ describe('skills.listPublicPageV2', () => {
     expect(paginateMock).toHaveBeenCalledTimes(1)
   })
 
-  it('keeps nonSuspicious pagination on the base sort index while backfill is incomplete', async () => {
+  it('uses the base index and filters suspicious rows in JS when nonSuspiciousOnly is true', async () => {
+    const clean = makeSkill('skills:clean', 'clean', 'users:1', 'skillVersions:1')
     const suspicious = makeSkill(
       'skills:suspicious',
       'suspicious',
-      'users:1',
-      'skillVersions:1',
+      'users:2',
+      'skillVersions:2',
       ['flagged.suspicious'],
     )
-    const cleanWithoutBackfill = makeSkill('skills:clean', 'clean', 'users:2', 'skillVersions:2')
-    const paginateMock = vi
-      .fn()
-      .mockResolvedValueOnce({
-        page: [suspicious],
-        continueCursor: 'next-cursor',
-        isDone: false,
-        pageStatus: null,
-        splitCursor: null,
-      })
-      .mockResolvedValueOnce({
-        page: [cleanWithoutBackfill],
-        continueCursor: 'after-clean',
-        isDone: false,
-        pageStatus: null,
-        splitCursor: null,
-      })
+    const paginateMock = vi.fn().mockResolvedValueOnce({
+      page: [suspicious, clean],
+      continueCursor: 'after-clean',
+      isDone: false,
+      pageStatus: null,
+      splitCursor: null,
+    })
     const withIndexMock = vi.fn(() => ({
       order: vi.fn(() => ({ paginate: paginateMock })),
     }))
@@ -242,26 +210,55 @@ describe('skills.listPublicPageV2', () => {
     expect(result.page[0]?.skill.slug).toBe('clean')
     expect(result.continueCursor).toBe('after-clean')
     expect(result.isDone).toBe(false)
-    expect(withIndexMock).toHaveBeenCalledTimes(2)
-    expect(withIndexMock).toHaveBeenNthCalledWith(1, 'by_active_stats_downloads', expect.any(Function))
-    expect(withIndexMock).toHaveBeenNthCalledWith(2, 'by_active_stats_downloads', expect.any(Function))
-    expect(withIndexMock).not.toHaveBeenCalledWith('by_nonsuspicious_downloads', expect.any(Function))
-    expect(paginateMock).toHaveBeenNthCalledWith(1, { cursor: null, numItems: 25 })
-    expect(paginateMock).toHaveBeenNthCalledWith(2, { cursor: 'next-cursor', numItems: 25 })
+    expect(withIndexMock).toHaveBeenCalledTimes(1)
+    expect(withIndexMock).toHaveBeenCalledWith('by_active_stats_downloads', expect.any(Function))
+    expect(paginateMock).toHaveBeenCalledTimes(1)
   })
 
-  it('restarts pagination from first page when cursor is stale', async () => {
-    const plain = makeSkill('skills:plain', 'plain', 'users:1', 'skillVersions:1')
+  it('filters out skills whose owners are deleted or banned', async () => {
+    const active = makeSkill('skills:active', 'active', 'users:active', 'skillVersions:1')
+    const banned = makeSkill('skills:banned', 'banned', 'users:banned', 'skillVersions:2')
+    const paginateMock = vi.fn().mockResolvedValueOnce({
+      page: [banned, active],
+      continueCursor: 'after-active',
+      isDone: false,
+      pageStatus: null,
+      splitCursor: null,
+    })
+    const withIndexMock = vi.fn(() => ({
+      order: vi.fn(() => ({ paginate: paginateMock })),
+    }))
+    const ctx = {
+      db: {
+        query: vi.fn(() => ({
+          withIndex: withIndexMock,
+        })),
+        get: vi.fn(async (id: string) => {
+          if (id === 'users:active') return makeUser(id)
+          if (id === 'users:banned') return { ...makeUser(id), deletedAt: 123 }
+          if (id.startsWith('skillVersions:')) return makeVersion(id)
+          return null
+        }),
+      },
+    }
+
+    const result = await listPublicPageV2Handler(ctx, {
+      paginationOpts: { cursor: null, numItems: 25 },
+      sort: 'downloads',
+      dir: 'desc',
+      highlightedOnly: false,
+      nonSuspiciousOnly: false,
+    })
+
+    expect(result.page).toHaveLength(1)
+    expect(result.page[0]?.skill.slug).toBe('active')
+    expect(result.continueCursor).toBe('after-active')
+  })
+
+  it('returns empty isDone page when cursor is stale', async () => {
     const paginateMock = vi
       .fn()
       .mockRejectedValueOnce(new Error('Failed to parse cursor'))
-      .mockResolvedValueOnce({
-        page: [plain],
-        continueCursor: 'next-cursor',
-        isDone: false,
-        pageStatus: null,
-        splitCursor: null,
-      })
     const ctx = {
       db: {
         query: vi.fn(() => ({
@@ -269,11 +266,7 @@ describe('skills.listPublicPageV2', () => {
             order: vi.fn(() => ({ paginate: paginateMock })),
           })),
         })),
-        get: vi.fn(async (id: string) => {
-          if (id.startsWith('users:')) return makeUser(id)
-          if (id.startsWith('skillVersions:')) return makeVersion(id)
-          return null
-        }),
+        get: vi.fn(),
       },
     }
 
@@ -285,17 +278,11 @@ describe('skills.listPublicPageV2', () => {
       nonSuspiciousOnly: false,
     })
 
-    expect(result.page).toHaveLength(1)
-    expect(result.page[0]?.skill.slug).toBe('plain')
-    expect(result.continueCursor).toBe('next-cursor')
-    expect(result.isDone).toBe(false)
-    expect(paginateMock).toHaveBeenNthCalledWith(1, { cursor: 'stale-cursor', numItems: 25 })
-    expect(paginateMock).toHaveBeenNthCalledWith(2, { cursor: null, numItems: 25 })
-    expect(paginateMock).not.toHaveBeenCalledWith(
-      expect.objectContaining({
-        id: expect.any(Number),
-      }),
-    )
+    expect(result.page).toEqual([])
+    expect(result.isDone).toBe(true)
+    expect(result.continueCursor).toBe('')
+    expect(paginateMock).toHaveBeenCalledTimes(1)
+    expect(paginateMock).toHaveBeenCalledWith({ cursor: 'stale-cursor', numItems: 25 })
   })
 
   it('drops pagination id from client options on first-page queries', async () => {
@@ -340,6 +327,131 @@ describe('skills.listPublicPageV2', () => {
     )
   })
 
+  it('falls back to db.get(latestVersionId) when latestVersionSummary is absent', async () => {
+    const oldRow = makeSkill('skills:old', 'old', 'users:1', 'skillVersions:1')
+    // Simulate a pre-backfill digest row without latestVersionSummary
+    delete (oldRow as Record<string, unknown>).latestVersionSummary
+
+    const paginateMock = vi.fn().mockResolvedValue({
+      page: [oldRow],
+      continueCursor: 'next-cursor',
+      isDone: false,
+      pageStatus: null,
+      splitCursor: null,
+    })
+    const getMock = vi.fn(async (id: string) => {
+      if (id.startsWith('users:')) return makeUser(id)
+      if (id.startsWith('skillVersions:')) return makeVersion(id)
+      return null
+    })
+    const ctx = {
+      db: {
+        query: vi.fn(() => ({
+          withIndex: vi.fn(() => ({
+            order: vi.fn(() => ({ paginate: paginateMock })),
+          })),
+        })),
+        get: getMock,
+      },
+    }
+
+    const result = await listPublicPageV2Handler(ctx, {
+      paginationOpts: { cursor: null, numItems: 25 },
+      sort: 'downloads',
+      dir: 'desc',
+      highlightedOnly: false,
+      nonSuspiciousOnly: false,
+    })
+
+    expect(result.page).toHaveLength(1)
+    expect(result.page[0]?.skill.slug).toBe('old')
+    // Should have fetched the version doc via db.get
+    expect(getMock).toHaveBeenCalledWith('skillVersions:1')
+  })
+
+  it('revalidates the owner even when digest has ownerHandle', async () => {
+    const skill = makeSkill('skills:s1', 's1', 'users:1', 'skillVersions:1')
+    const paginateMock = vi.fn().mockResolvedValue({
+      page: [skill],
+      continueCursor: 'next-cursor',
+      isDone: false,
+      pageStatus: null,
+      splitCursor: null,
+    })
+    const getMock = vi.fn(async (id: string) => {
+      if (id === 'users:1') return makeUser(id)
+      if (id.startsWith('skillVersions:')) return makeVersion(id)
+      return null
+    })
+    const ctx = {
+      db: {
+        query: vi.fn(() => ({
+          withIndex: vi.fn(() => ({
+            order: vi.fn(() => ({ paginate: paginateMock })),
+          })),
+        })),
+        get: getMock,
+      },
+    }
+
+    const result = await listPublicPageV2Handler(ctx, {
+      paginationOpts: { cursor: null, numItems: 25 },
+      sort: 'downloads',
+      dir: 'desc',
+      highlightedOnly: false,
+      nonSuspiciousOnly: false,
+    })
+
+    expect(result.page).toHaveLength(1)
+    expect(result.page[0]?.skill.slug).toBe('s1')
+    expect(getMock).toHaveBeenCalledWith('users:1')
+  })
+
+  it('falls back to db.get for owner when digest lacks ownerHandle', async () => {
+    const skill = makeSkill('skills:old', 'old', 'users:1', 'skillVersions:1')
+    // Simulate pre-backfill row without owner fields
+    delete (skill as Record<string, unknown>).ownerHandle
+    delete (skill as Record<string, unknown>).ownerName
+    delete (skill as Record<string, unknown>).ownerDisplayName
+    delete (skill as Record<string, unknown>).ownerImage
+
+    const paginateMock = vi.fn().mockResolvedValue({
+      page: [skill],
+      continueCursor: 'next-cursor',
+      isDone: false,
+      pageStatus: null,
+      splitCursor: null,
+    })
+    const getMock = vi.fn(async (id: string) => {
+      if (id.startsWith('users:')) return makeUser(id)
+      if (id.startsWith('skillVersions:')) return makeVersion(id)
+      return null
+    })
+    const ctx = {
+      db: {
+        query: vi.fn(() => ({
+          withIndex: vi.fn(() => ({
+            order: vi.fn(() => ({ paginate: paginateMock })),
+          })),
+        })),
+        get: getMock,
+      },
+    }
+
+    const result = await listPublicPageV2Handler(ctx, {
+      paginationOpts: { cursor: null, numItems: 25 },
+      sort: 'downloads',
+      dir: 'desc',
+      highlightedOnly: false,
+      nonSuspiciousOnly: false,
+    })
+
+    expect(result.page).toHaveLength(1)
+    expect(result.page[0]?.skill.slug).toBe('old')
+    // Should have fallen back to db.get for owner
+    expect(getMock).toHaveBeenCalledWith('users:1')
+  })
+
   it('does not swallow non-cursor paginate errors', async () => {
     const paginateMock = vi.fn().mockRejectedValue(new Error('database unavailable'))
     const ctx = {
@@ -378,13 +490,24 @@ function makeSkill(
   return {
     _id: id,
     _creationTime: 1,
+    skillId: id,
     slug,
     displayName: slug,
     summary: `${slug} summary`,
     ownerUserId,
+    ownerHandle: 'owner',
+    ownerName: 'Owner',
+    ownerDisplayName: 'Owner',
+    ownerImage: undefined as string | undefined,
     canonicalSkillId: undefined,
     forkOf: undefined,
     latestVersionId,
+    latestVersionSummary: {
+      version: '1.0.0',
+      createdAt: 1,
+      changelog: '',
+      changelogSource: 'user' as const,
+    },
     tags: {},
     badges: {},
     stats: {

@@ -2,7 +2,7 @@ import { v } from 'convex/values'
 import { internal } from './_generated/api'
 import type { Doc, Id } from './_generated/dataModel'
 import type { ActionCtx, DatabaseReader, DatabaseWriter } from './_generated/server'
-import { action, internalMutation, internalQuery } from './_generated/server'
+import { action, internalMutation, internalQuery } from './functions'
 import { publishSoulVersionForUser } from './lib/soulPublish'
 import { SOUL_SEED_DISPLAY_NAME, SOUL_SEED_HANDLE, SOUL_SEED_KEY, SOUL_SEEDS } from './seedSouls'
 

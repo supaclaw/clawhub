@@ -24,6 +24,39 @@ export type PublicSkill = Pick<
   | 'updatedAt'
 >
 
+/**
+ * Minimum set of fields needed by `hydrateResults` to filter and convert
+ * a skill into a `PublicSkill`.  Both `Doc<'skills'>` and the lightweight
+ * `skillSearchDigest` row (after mapping) satisfy this interface, so the
+ * compiler will catch any field that drifts between them.
+ */
+export type HydratableSkill = Pick<
+  Doc<'skills'>,
+  | '_id'
+  | '_creationTime'
+  | 'slug'
+  | 'displayName'
+  | 'summary'
+  | 'ownerUserId'
+  | 'canonicalSkillId'
+  | 'forkOf'
+  | 'latestVersionId'
+  | 'latestVersionSummary'
+  | 'tags'
+  | 'badges'
+  | 'stats'
+  | 'statsDownloads'
+  | 'statsStars'
+  | 'statsInstallsCurrent'
+  | 'statsInstallsAllTime'
+  | 'softDeletedAt'
+  | 'moderationStatus'
+  | 'moderationFlags'
+  | 'moderationReason'
+  | 'createdAt'
+  | 'updatedAt'
+>
+
 export type PublicSoul = Pick<
   Doc<'souls'>,
   | '_id'
@@ -52,7 +85,7 @@ export function toPublicUser(user: Doc<'users'> | null | undefined): PublicUser 
   }
 }
 
-export function toPublicSkill(skill: Doc<'skills'> | null | undefined): PublicSkill | null {
+export function toPublicSkill(skill: HydratableSkill | null | undefined): PublicSkill | null {
   if (!skill) return null
   if (!isPublicSkillDoc(skill)) return null
   const stats = {

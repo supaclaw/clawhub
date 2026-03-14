@@ -2,7 +2,7 @@ import { getAuthUserId } from '@convex-dev/auth/server'
 import { v } from 'convex/values'
 import type { Id } from './_generated/dataModel'
 import type { MutationCtx, QueryCtx } from './_generated/server'
-import { internalMutation, mutation, query } from './_generated/server'
+import { internalMutation, mutation, query } from './functions'
 import { requireUser } from './lib/access'
 import { insertStatEvent } from './skillStatEvents'
 

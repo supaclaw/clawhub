@@ -282,6 +282,18 @@ export const ApiV1DeleteResponseSchema = type({
   ok: 'true',
 })
 
+export const ApiV1SkillRenameResponseSchema = type({
+  ok: 'true',
+  slug: 'string',
+  previousSlug: 'string',
+})
+
+export const ApiV1SkillMergeResponseSchema = type({
+  ok: 'true',
+  sourceSlug: 'string',
+  targetSlug: 'string',
+})
+
 export const ApiV1TransferRequestResponseSchema = type({
   ok: 'true',
   transferId: 'string',
@@ -433,3 +445,4 @@ type _AssertExactKeys<A, B> = [keyof A] extends [keyof B] ? [keyof B] extends [k
 type _ClawdisKeysMatch = _AssertExactKeys<ClawdisSkillMetadata, _ClawdisInferred>
 // If this line errors, ClawdisSkillMetadata is out of sync with ClawdisSkillMetadataSchema
 const _clawdisKeysCheck: _ClawdisKeysMatch = true
+void _clawdisKeysCheck

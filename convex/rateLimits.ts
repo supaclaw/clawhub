@@ -1,5 +1,5 @@
 import { v } from 'convex/values'
-import { internalMutation, internalQuery } from './_generated/server'
+import { internalMutation, internalQuery } from './functions'
 
 /**
  * Read-only rate limit check. Returns current status without writing anything.

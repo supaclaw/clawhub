@@ -1,6 +1,6 @@
 import { v } from 'convex/values'
 import type { Doc } from './_generated/dataModel'
-import { mutation, query } from './_generated/server'
+import { mutation, query } from './functions'
 import { addHandler, removeHandler, reportHandler } from './comments.handlers'
 import { type PublicUser, toPublicUser } from './lib/public'
 

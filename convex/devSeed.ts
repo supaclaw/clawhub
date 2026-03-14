@@ -1,7 +1,7 @@
 import { v } from 'convex/values'
 import { internal } from './_generated/api'
 import type { ActionCtx } from './_generated/server'
-import { internalAction, internalMutation } from './_generated/server'
+import { internalAction, internalMutation } from './functions'
 import { EMBEDDING_DIMENSIONS } from './lib/embeddings'
 import { parseClawdisMetadata, parseFrontmatter } from './lib/skills'
 

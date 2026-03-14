@@ -30,6 +30,7 @@ describe('skills reclaim ownership transfer', () => {
     }
 
     const db = {
+      normalizeId: vi.fn(),
       get: vi.fn(async (id: string) => {
         if (id === 'users:admin') return { _id: 'users:admin', role: 'admin' }
         if (id === 'users:new') return { _id: 'users:new', role: 'user' }
@@ -66,6 +67,13 @@ describe('skills reclaim ownership transfer', () => {
                 }),
               }
             },
+          }
+        }
+        if (table === 'skillSearchDigest') {
+          return {
+            withIndex: () => ({
+              unique: async () => null,
+            }),
           }
         }
         throw new Error(`unexpected table ${table}`)
@@ -112,6 +120,7 @@ describe('skills reclaim ownership transfer', () => {
     const runAfter = vi.fn(async () => {})
 
     const db = {
+      normalizeId: vi.fn(),
       get: vi.fn(async (id: string) => {
         if (id === 'users:admin') return { _id: 'users:admin', role: 'admin' }
         if (id === 'users:new') return { _id: 'users:new', role: 'user' }

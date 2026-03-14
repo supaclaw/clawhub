@@ -1,7 +1,7 @@
 import { v } from 'convex/values'
 import { internal } from './_generated/api'
 import type { Doc, Id } from './_generated/dataModel'
-import { action, internalMutation, internalQuery } from './_generated/server'
+import { action, internalMutation, internalQuery } from './functions'
 import { assertRole, requireUserFromAction } from './lib/access'
 
 const DEFAULT_BATCH_SIZE = 50

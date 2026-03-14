@@ -1,4 +1,4 @@
-import { query } from './_generated/server'
+import { query } from './functions'
 
 function normalizeEnv(value: string | undefined) {
   const normalized = value?.trim()

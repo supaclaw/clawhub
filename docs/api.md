@@ -59,12 +59,19 @@ Client handling:
 Public read:
 
 - `GET /api/v1/search?q=...`
+  - Optional filters: `highlightedOnly=true`, `nonSuspiciousOnly=true`
+  - Legacy alias: `nonSuspicious=true`
 - `GET /api/v1/skills?limit=&cursor=&sort=`
   - `sort`: `updated` (default), `downloads`, `stars` (`rating`), `installsCurrent` (`installs`), `installsAllTime`, `trending`
+  - `cursor` applies to non-`trending` sorts
+  - Optional filter: `nonSuspiciousOnly=true`
+  - Legacy alias: `nonSuspicious=true`
+  - With `nonSuspiciousOnly=true`, cursor-based pages may contain fewer than `limit` items; use `nextCursor` to continue.
 - `GET /api/v1/skills/{slug}`
 - `GET /api/v1/skills/{slug}/moderation`
 - `GET /api/v1/skills/{slug}/versions?limit=&cursor=`
 - `GET /api/v1/skills/{slug}/versions/{version}`
+- `GET /api/v1/skills/{slug}/scan?version=&tag=`
 - `GET /api/v1/skills/{slug}/file?path=&version=&tag=`
 - `GET /api/v1/resolve?slug=&hash=`
 - `GET /api/v1/download?slug=&version=&tag=`
@@ -74,6 +81,8 @@ Auth required:
 - `POST /api/v1/skills` (publish, multipart preferred)
 - `DELETE /api/v1/skills/{slug}`
 - `POST /api/v1/skills/{slug}/undelete`
+- `POST /api/v1/skills/{slug}/rename`
+- `POST /api/v1/skills/{slug}/merge`
 - `POST /api/v1/skills/{slug}/transfer`
 - `POST /api/v1/skills/{slug}/transfer/accept`
 - `POST /api/v1/skills/{slug}/transfer/reject`

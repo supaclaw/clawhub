@@ -2,7 +2,7 @@ import { ConvexError, v } from 'convex/values'
 import { internal } from './_generated/api'
 import type { Id } from './_generated/dataModel'
 import type { ActionCtx, MutationCtx } from './_generated/server'
-import { action, internalAction, internalMutation, internalQuery } from './_generated/server'
+import { action, internalAction, internalMutation, internalQuery } from './functions'
 import { assertRole, requireUserFromAction } from './lib/access'
 import {
   buildCommentScamBanReason,

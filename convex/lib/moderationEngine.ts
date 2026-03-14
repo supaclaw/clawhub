@@ -1,10 +1,12 @@
 import type { Doc, Id } from '../_generated/dataModel'
 import {
+  isExternallyClearableSuspiciousCode,
   legacyFlagsFromVerdict,
   MODERATION_ENGINE_VERSION,
   normalizeReasonCodes,
   type ModerationFinding,
   REASON_CODES,
+  type ScannerModerationVerdict,
   summarizeReasonCodes,
   type ModerationVerdict,
   verdictFromCodes,
@@ -23,7 +25,7 @@ export type StaticScanInput = {
 }
 
 export type StaticScanResult = {
-  status: ModerationVerdict
+  status: ScannerModerationVerdict
   reasonCodes: string[]
   findings: ModerationFinding[]
   summary: string
@@ -32,7 +34,7 @@ export type StaticScanResult = {
 }
 
 export type ModerationSnapshot = {
-  verdict: ModerationVerdict
+  verdict: ScannerModerationVerdict
   reasonCodes: string[]
   evidence: ModerationFinding[]
   summary: string
@@ -46,6 +48,28 @@ const MANIFEST_EXTENSION = /\.(json|yaml|yml|toml)$/i
 const MARKDOWN_EXTENSION = /\.(md|markdown|mdx)$/i
 const CODE_EXTENSION = /\.(js|ts|mjs|cjs|mts|cts|jsx|tsx|py|sh|bash|zsh|rb|go)$/i
 const STANDARD_PORTS = new Set([80, 443, 8080, 8443, 3000])
+const RAW_IP_URL_PATTERN = /https?:\/\/\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?(?:\/|["'])/i
+const INSTALL_PACKAGE_PATTERN = /installer-package\s*:\s*https?:\/\/[^\s"'`]+/i
+
+function hasMaliciousInstallPrompt(content: string) {
+  const hasTerminalInstruction =
+    /(?:copy|paste).{0,80}(?:command|snippet).{0,120}(?:terminal|shell)/is.test(content) ||
+    /run\s+it\s+in\s+terminal/i.test(content) ||
+    /open\s+terminal/i.test(content) ||
+    /for\s+macos\s*:/i.test(content)
+  if (!hasTerminalInstruction) return false
+
+  const hasCurlPipe =
+    /(?:curl|wget)\b[^\n|]{0,240}\|\s*(?:\/bin\/)?(?:ba)?sh\b/i.test(content)
+  const hasBase64Exec =
+    /(?:echo|printf)\s+["'][A-Za-z0-9+/=\s]{40,}["']\s*\|\s*base64\s+-?[dD]\b[^\n|]{0,120}\|\s*(?:\/bin\/)?(?:ba)?sh\b/i.test(
+      content,
+    )
+  const hasRawIpUrl = RAW_IP_URL_PATTERN.test(content)
+  const hasInstallerPackage = INSTALL_PACKAGE_PATTERN.test(content)
+
+  return hasBase64Exec || (hasCurlPipe && (hasRawIpUrl || hasInstallerPackage))
+}
 
 function truncateEvidence(evidence: string, maxLen = 160) {
   if (evidence.length <= maxLen) return evidence
@@ -172,14 +196,28 @@ function scanCodeFile(path: string, content: string, findings: ModerationFinding
 function scanMarkdownFile(path: string, content: string, findings: ModerationFinding[]) {
   if (!MARKDOWN_EXTENSION.test(path)) return
 
+  if (hasMaliciousInstallPrompt(content)) {
+    const match = findFirstLine(
+      content,
+      /installer-package\s*:|base64\s+-?[dD]|(?:curl|wget)\b|run\s+it\s+in\s+terminal/i,
+    )
+    addFinding(findings, {
+      code: REASON_CODES.MALICIOUS_INSTALL_PROMPT,
+      severity: 'critical',
+      file: path,
+      line: match.line,
+      message: 'Install prompt contains an obfuscated terminal payload.',
+      evidence: match.text,
+    })
+  }
+
   if (
     /ignore\s+(all\s+)?previous\s+instructions/i.test(content) ||
-    /system\s*prompt\s*[:=]/i.test(content) ||
-    /you\s+are\s+now\s+(a|an)\b/i.test(content)
+    /system\s*prompt\s*[:=]/i.test(content)
   ) {
     const match = findFirstLine(
       content,
-      /ignore\s+(all\s+)?previous\s+instructions|system\s*prompt\s*[:=]|you\s+are\s+now\s+(a|an)\b/i,
+      /ignore\s+(all\s+)?previous\s+instructions|system\s*prompt\s*[:=]/i,
     )
     addFinding(findings, {
       code: REASON_CODES.INJECTION_INSTRUCTIONS,
@@ -197,7 +235,7 @@ function scanManifestFile(path: string, content: string, findings: ModerationFin
 
   if (
     /https?:\/\/(bit\.ly|tinyurl\.com|t\.co|goo\.gl|is\.gd)\//i.test(content) ||
-    /https?:\/\/\d{1,3}(?:\.\d{1,3}){3}/i.test(content)
+    RAW_IP_URL_PATTERN.test(content)
   ) {
     const match = findFirstLine(
       content,
@@ -299,15 +337,32 @@ export function runStaticModerationScan(input: StaticScanInput): StaticScanResul
   }
 }
 
+function isExternalScannerClean(status: string | undefined): boolean {
+  const normalized = status?.trim().toLowerCase()
+  return normalized === 'clean' || normalized === 'benign'
+}
+
 export function buildModerationSnapshot(params: {
   staticScan?: StaticScanResult
   vtStatus?: string
   llmStatus?: string
   sourceVersionId?: Id<'skillVersions'>
 }): ModerationSnapshot {
-  const reasonCodes = [...(params.staticScan?.reasonCodes ?? [])]
+  let staticCodes = [...(params.staticScan?.reasonCodes ?? [])]
   const evidence = [...(params.staticScan?.findings ?? [])]
 
+  // When both external scanners (VT + LLM) explicitly report clean/benign,
+  // only suppress allowlisted false-positive static codes from the verdict calculation.
+  // Everything else remains part of the moderation decision.
+  const vtClean = isExternalScannerClean(params.vtStatus)
+  const llmClean = isExternalScannerClean(params.llmStatus)
+  if (vtClean && llmClean && staticCodes.length > 0) {
+    staticCodes = staticCodes.filter(
+      (code) => !isExternallyClearableSuspiciousCode(code),
+    )
+  }
+
+  const reasonCodes = [...staticCodes]
   addScannerStatusReason(reasonCodes, 'vt', params.vtStatus)
   addScannerStatusReason(reasonCodes, 'llm', params.llmStatus)
 

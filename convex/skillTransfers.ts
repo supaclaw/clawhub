@@ -1,7 +1,6 @@
 import { v } from 'convex/values'
 import type { Doc, Id } from './_generated/dataModel'
-import { internalMutation, internalQuery } from './_generated/server'
-
+import { internalMutation, internalQuery } from './functions'
 const TRANSFER_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000
 
 type TransferDoc = Doc<'skillOwnershipTransfers'>

@@ -4,7 +4,7 @@ import { v } from 'convex/values'
 import { internal } from './_generated/api'
 import type { Doc } from './_generated/dataModel'
 import type { ActionCtx } from './_generated/server'
-import { internalAction } from './_generated/server'
+import { internalAction } from './functions'
 import {
   backupSoulToGitHub,
   fetchGitHubSoulMeta,

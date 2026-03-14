@@ -1,5 +1,5 @@
 import { v } from 'convex/values'
-import { internalMutation, mutation } from './_generated/server'
+import { internalMutation, mutation } from './functions'
 import { requireUser } from './lib/access'
 
 export const generateUploadUrl = mutation({

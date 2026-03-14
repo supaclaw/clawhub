@@ -11,12 +11,18 @@ vi.mock('./skillStatEvents', () => ({
 
 const { requireUser } = await import('./lib/access')
 const { insertStatEvent } = await import('./skillStatEvents')
-const { ensureHandler, list, searchInternal, banUserInternal } = await import('./users')
+const {
+  ensureHandler,
+  list,
+  searchInternal,
+  banUserInternal,
+  placeUserUnderModerationInternal,
+} = await import('./users')
 
 function makeCtx() {
   const patch = vi.fn()
   const get = vi.fn()
-  return { ctx: { db: { patch, get } } as never, patch, get }
+  return { ctx: { db: { patch, get, normalizeId: vi.fn() } } as never, patch, get }
 }
 
 function makeListCtx(users: Array<Record<string, unknown>>) {
@@ -26,7 +32,7 @@ function makeListCtx(users: Array<Record<string, unknown>>) {
   const query = vi.fn(() => ({ order }))
   const get = vi.fn()
   return {
-    ctx: { db: { query, get } } as never,
+    ctx: { db: { query, get, normalizeId: vi.fn() } } as never,
     take,
     collect,
     order,
@@ -73,7 +79,7 @@ function makeBanCtx() {
     },
   }))
 
-  const ctx = { db: { patch, insert, get, query }, runMutation } as never
+  const ctx = { db: { patch, insert, get, query, normalizeId: vi.fn() }, runMutation } as never
   return { ctx, patch, insert, get, runMutation }
 }
 
@@ -550,7 +556,10 @@ describe('users.banUserInternal', () => {
       updatedAt: 1_700_000_000_000,
     })
 
-    expect(insertStatEvent).toHaveBeenCalledWith(ctx, { skillId: 'skills:1', kind: 'uncomment' })
+    expect(insertStatEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      { skillId: 'skills:1', kind: 'uncomment' },
+    )
     expect(insert).toHaveBeenCalledWith(
       'auditLogs',
       expect.objectContaining({
@@ -605,5 +614,89 @@ describe('users.banUserInternal', () => {
       softDeletedAt: 1_600_000_000_000,
       deletedBy: 'users:actor',
     })
+  })
+})
+
+describe('users.placeUserUnderModerationInternal', () => {
+  it('marks the user and hides owned skills', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1_700_000_000_000)
+    const patch = vi.fn()
+    const insert = vi.fn()
+    const get = vi.fn(async (id: string) => {
+      if (id === 'users:target') {
+        return {
+          _id: 'users:target',
+          role: 'user',
+          handle: 'badguy',
+          deletedAt: undefined,
+          deactivatedAt: undefined,
+          requiresModerationAt: undefined,
+        }
+      }
+      return null
+    })
+    const runMutation = vi.fn(async () => ({ hiddenCount: 3, scheduled: false }))
+
+    const handler = (
+      placeUserUnderModerationInternal as unknown as {
+        _handler: (
+          ctx: unknown,
+          args: { ownerUserId: string; slug: string; reason: string },
+        ) => Promise<unknown>
+      }
+    )._handler
+
+    const result = (await handler(
+      {
+        db: {
+          get,
+          patch,
+          insert,
+          delete: vi.fn(),
+          replace: vi.fn(),
+          query: vi.fn(),
+          normalizeId: vi.fn(),
+        },
+        runMutation,
+      } as never,
+      {
+        ownerUserId: 'users:target',
+        slug: 'bad-skill',
+        reason: 'malicious.install_terminal_payload',
+      },
+    )) as {
+      ok: boolean
+      alreadyModerated: boolean
+      hiddenSkills: number
+    }
+
+    expect(result).toEqual({
+      ok: true,
+      alreadyModerated: false,
+      hiddenSkills: 3,
+      scheduledSkills: false,
+    })
+    expect(patch).toHaveBeenCalledWith('users:target', {
+      requiresModerationAt: 1_700_000_000_000,
+      requiresModerationReason:
+        'Auto-held for moderation after malicious upload (malicious.install_terminal_payload)',
+      updatedAt: 1_700_000_000_000,
+    })
+    expect(runMutation).toHaveBeenCalledWith(expect.anything(), {
+      ownerUserId: 'users:target',
+      hiddenAt: 1_700_000_000_000,
+      cursor: undefined,
+    })
+    expect(insert).toHaveBeenCalledWith(
+      'auditLogs',
+      expect.objectContaining({
+        action: 'user.moderation.auto',
+        metadata: expect.objectContaining({
+          slug: 'bad-skill',
+          reason: 'malicious.install_terminal_payload',
+          hiddenSkills: 3,
+        }),
+      }),
+    )
   })
 })

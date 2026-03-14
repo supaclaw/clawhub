@@ -1,6 +1,6 @@
 import { v } from 'convex/values'
 import type { Doc } from './_generated/dataModel'
-import { internalMutation, internalQuery, mutation, query } from './_generated/server'
+import { internalMutation, internalQuery, mutation, query } from './functions'
 import { requireUser } from './lib/access'
 import { generateToken, hashToken } from './lib/tokens'
 

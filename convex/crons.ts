@@ -13,7 +13,7 @@ crons.interval(
 crons.interval(
   'trending-leaderboard',
   { minutes: 60 },
-  internal.leaderboards.rebuildTrendingLeaderboardInternal,
+  internal.leaderboards.rebuildTrendingLeaderboardAction,
   { limit: 200 },
 )
 
@@ -46,7 +46,7 @@ crons.interval(
 crons.interval(
   'global-stats-update',
   { hours: 24 },
-  internal.statsMaintenance.updateGlobalStatsInternal,
+  internal.statsMaintenance.updateGlobalStatsAction,
   {},
 )
 

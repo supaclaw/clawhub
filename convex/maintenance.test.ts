@@ -233,6 +233,7 @@ describe('maintenance backfill', () => {
         query: vi.fn(() => ({ paginate })),
         get,
         patch,
+        normalizeId: vi.fn(),
       },
       scheduler: {
         runAfter,
@@ -276,6 +277,7 @@ describe('maintenance badge denormalization', () => {
         insert,
         get,
         patch,
+        normalizeId: vi.fn(),
       },
     } as never
 
@@ -317,6 +319,7 @@ describe('maintenance badge denormalization', () => {
         insert,
         get,
         patch,
+        normalizeId: vi.fn(),
       },
     } as never
 

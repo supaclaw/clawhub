@@ -1,7 +1,7 @@
 import { ConvexError, v } from 'convex/values'
 import { internal } from './_generated/api'
 import type { Doc, Id } from './_generated/dataModel'
-import { action, internalMutation, internalQuery, mutation, query } from './_generated/server'
+import { action, internalMutation, internalQuery, mutation, query } from './functions'
 import { assertModerator, requireUser, requireUserFromAction } from './lib/access'
 import { embeddingVisibilityFor } from './lib/embeddingVisibility'
 import { toPublicSoul, toPublicUser } from './lib/public'
@@ -150,7 +150,7 @@ export const getVersionsByIdsInternal = internalQuery({
   args: { versionIds: v.array(v.id('soulVersions')) },
   handler: async (ctx, args) => {
     const versions = await Promise.all(args.versionIds.map((id) => ctx.db.get(id)))
-    return versions.filter((v): v is NonNullable<typeof v> => v !== null)
+    return versions.filter((versionDoc): versionDoc is NonNullable<typeof versionDoc> => versionDoc !== null)
   },
 })
 

@@ -1,4 +1,4 @@
-import { httpAction } from './_generated/server'
+import { httpAction } from './functions'
 
 import {
   listSkillsV1Handler,

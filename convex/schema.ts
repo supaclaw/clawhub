@@ -5,6 +5,13 @@ import { EMBEDDING_DIMENSIONS } from './lib/embeddings'
 
 const PLATFORM_SKILL_LICENSE = 'MIT-0' as const
 
+const manualModerationOverride = v.object({
+  verdict: v.literal('clean'),
+  note: v.string(),
+  reviewerUserId: v.id('users'),
+  updatedAt: v.number(),
+})
+
 const users = defineTable({
   name: v.optional(v.string()),
   image: v.optional(v.string()),
@@ -16,11 +23,15 @@ const users = defineTable({
   handle: v.optional(v.string()),
   displayName: v.optional(v.string()),
   bio: v.optional(v.string()),
-  role: v.optional(v.union(v.literal('admin'), v.literal('moderator'), v.literal('user'))),
+  role: v.optional(
+    v.union(v.literal('admin'), v.literal('moderator'), v.literal('user')),
+  ),
   githubCreatedAt: v.optional(v.number()),
   githubFetchedAt: v.optional(v.number()),
   githubProfileSyncedAt: v.optional(v.number()),
   trustedPublisher: v.optional(v.boolean()),
+  requiresModerationAt: v.optional(v.number()),
+  requiresModerationReason: v.optional(v.string()),
   deactivatedAt: v.optional(v.number()),
   purgedAt: v.optional(v.number()),
   deletedAt: v.optional(v.number()),
@@ -32,6 +43,42 @@ const users = defineTable({
   .index('phone', ['phone'])
   .index('handle', ['handle'])
 
+// Shared validator fragments used by both `skills` and `skillSearchDigest`.
+const forkOfValidator = v.optional(
+  v.object({
+    skillId: v.id('skills'),
+    kind: v.union(v.literal('fork'), v.literal('duplicate')),
+    version: v.optional(v.string()),
+    at: v.number(),
+  }),
+)
+
+const badgeEntryValidator = v.optional(
+  v.object({ byUserId: v.id('users'), at: v.number() }),
+)
+
+const badgesValidator = v.optional(
+  v.object({
+    redactionApproved: badgeEntryValidator,
+    highlighted: badgeEntryValidator,
+    official: badgeEntryValidator,
+    deprecated: badgeEntryValidator,
+  }),
+)
+
+const statsValidator = v.object({
+  downloads: v.number(),
+  installsCurrent: v.optional(v.number()),
+  installsAllTime: v.optional(v.number()),
+  stars: v.number(),
+  versions: v.number(),
+  comments: v.number(),
+})
+
+const moderationStatusValidator = v.optional(
+  v.union(v.literal('active'), v.literal('hidden'), v.literal('removed')),
+)
+
 const skills = defineTable({
   slug: v.string(),
   displayName: v.string(),
@@ -39,68 +86,42 @@ const skills = defineTable({
   resourceId: v.optional(v.string()),
   ownerUserId: v.id('users'),
   canonicalSkillId: v.optional(v.id('skills')),
-  forkOf: v.optional(
-    v.object({
-      skillId: v.id('skills'),
-      kind: v.union(v.literal('fork'), v.literal('duplicate')),
-      version: v.optional(v.string()),
-      at: v.number(),
-    }),
-  ),
+  forkOf: forkOfValidator,
   latestVersionId: v.optional(v.id('skillVersions')),
   latestVersionSummary: v.optional(
     v.object({
       version: v.string(),
       createdAt: v.number(),
       changelog: v.string(),
-      changelogSource: v.optional(v.union(v.literal('auto'), v.literal('user'))),
+      changelogSource: v.optional(
+        v.union(v.literal('auto'), v.literal('user')),
+      ),
       clawdis: v.optional(v.any()),
     }),
   ),
   tags: v.record(v.string(), v.id('skillVersions')),
   softDeletedAt: v.optional(v.number()),
-  badges: v.optional(
-    v.object({
-      redactionApproved: v.optional(
-        v.object({
-          byUserId: v.id('users'),
-          at: v.number(),
-        }),
-      ),
-      highlighted: v.optional(
-        v.object({
-          byUserId: v.id('users'),
-          at: v.number(),
-        }),
-      ),
-      official: v.optional(
-        v.object({
-          byUserId: v.id('users'),
-          at: v.number(),
-        }),
-      ),
-      deprecated: v.optional(
-        v.object({
-          byUserId: v.id('users'),
-          at: v.number(),
-        }),
-      ),
-    }),
-  ),
-  moderationStatus: v.optional(
-    v.union(v.literal('active'), v.literal('hidden'), v.literal('removed')),
-  ),
+  badges: badgesValidator,
+  moderationStatus: moderationStatusValidator,
   moderationNotes: v.optional(v.string()),
   moderationReason: v.optional(v.string()),
   moderationVerdict: v.optional(
-    v.union(v.literal('clean'), v.literal('suspicious'), v.literal('malicious')),
+    v.union(
+      v.literal('clean'),
+      v.literal('suspicious'),
+      v.literal('malicious'),
+    ),
   ),
   moderationReasonCodes: v.optional(v.array(v.string())),
   moderationEvidence: v.optional(
     v.array(
       v.object({
         code: v.string(),
-        severity: v.union(v.literal('info'), v.literal('warn'), v.literal('critical')),
+        severity: v.union(
+          v.literal('info'),
+          v.literal('warn'),
+          v.literal('critical'),
+        ),
         file: v.string(),
         line: v.number(),
         message: v.string(),
@@ -112,11 +133,20 @@ const skills = defineTable({
   moderationEngineVersion: v.optional(v.string()),
   moderationEvaluatedAt: v.optional(v.number()),
   moderationSourceVersionId: v.optional(v.id('skillVersions')),
+  manualOverride: v.optional(manualModerationOverride),
   quality: v.optional(
     v.object({
       score: v.number(),
-      decision: v.union(v.literal('pass'), v.literal('quarantine'), v.literal('reject')),
-      trustTier: v.union(v.literal('low'), v.literal('medium'), v.literal('trusted')),
+      decision: v.union(
+        v.literal('pass'),
+        v.literal('quarantine'),
+        v.literal('reject'),
+      ),
+      trustTier: v.union(
+        v.literal('low'),
+        v.literal('medium'),
+        v.literal('trusted'),
+      ),
       similarRecentCount: v.number(),
       reason: v.string(),
       signals: v.object({
@@ -147,14 +177,7 @@ const skills = defineTable({
   statsStars: v.optional(v.number()),
   statsInstallsCurrent: v.optional(v.number()),
   statsInstallsAllTime: v.optional(v.number()),
-  stats: v.object({
-    downloads: v.number(),
-    installsCurrent: v.optional(v.number()),
-    installsAllTime: v.optional(v.number()),
-    stars: v.number(),
-    versions: v.number(),
-    comments: v.number(),
-  }),
+  stats: statsValidator,
   createdAt: v.number(),
   updatedAt: v.number(),
 })
@@ -169,7 +192,11 @@ const skills = defineTable({
   .index('by_active_updated', ['softDeletedAt', 'updatedAt'])
   .index('by_active_created', ['softDeletedAt', 'createdAt'])
   .index('by_active_name', ['softDeletedAt', 'displayName'])
-  .index('by_active_stats_downloads', ['softDeletedAt', 'statsDownloads', 'updatedAt'])
+  .index('by_active_stats_downloads', [
+    'softDeletedAt',
+    'statsDownloads',
+    'updatedAt',
+  ])
   .index('by_active_stats_stars', ['softDeletedAt', 'statsStars', 'updatedAt'])
   .index('by_active_stats_installs_all_time', [
     'softDeletedAt',
@@ -179,22 +206,50 @@ const skills = defineTable({
   .index('by_canonical', ['canonicalSkillId'])
   .index('by_fork_of', ['forkOf.skillId'])
   .index('by_moderation', ['moderationStatus', 'moderationReason'])
-  .index('by_nonsuspicious_updated', ['softDeletedAt', 'isSuspicious', 'updatedAt'])
-  .index('by_nonsuspicious_created', ['softDeletedAt', 'isSuspicious', 'createdAt'])
-  .index('by_nonsuspicious_name', ['softDeletedAt', 'isSuspicious', 'displayName'])
+  .index('by_nonsuspicious_updated', [
+    'softDeletedAt',
+    'isSuspicious',
+    'updatedAt',
+  ])
+  .index('by_nonsuspicious_created', [
+    'softDeletedAt',
+    'isSuspicious',
+    'createdAt',
+  ])
+  .index('by_nonsuspicious_name', [
+    'softDeletedAt',
+    'isSuspicious',
+    'displayName',
+  ])
   .index('by_nonsuspicious_downloads', [
     'softDeletedAt',
     'isSuspicious',
     'statsDownloads',
     'updatedAt',
   ])
-  .index('by_nonsuspicious_stars', ['softDeletedAt', 'isSuspicious', 'statsStars', 'updatedAt'])
+  .index('by_nonsuspicious_stars', [
+    'softDeletedAt',
+    'isSuspicious',
+    'statsStars',
+    'updatedAt',
+  ])
   .index('by_nonsuspicious_installs', [
     'softDeletedAt',
     'isSuspicious',
     'statsInstallsAllTime',
     'updatedAt',
   ])
+
+const skillSlugAliases = defineTable({
+  slug: v.string(),
+  skillId: v.id('skills'),
+  ownerUserId: v.id('users'),
+  createdAt: v.number(),
+  updatedAt: v.number(),
+})
+  .index('by_slug', ['slug'])
+  .index('by_skill', ['skillId'])
+  .index('by_owner', ['ownerUserId'])
 
 const souls = defineTable({
   slug: v.string(),
@@ -276,12 +331,20 @@ const skillVersions = defineTable({
   ),
   staticScan: v.optional(
     v.object({
-      status: v.union(v.literal('clean'), v.literal('suspicious'), v.literal('malicious')),
+      status: v.union(
+        v.literal('clean'),
+        v.literal('suspicious'),
+        v.literal('malicious'),
+      ),
       reasonCodes: v.array(v.string()),
       findings: v.array(
         v.object({
           code: v.string(),
-          severity: v.union(v.literal('info'), v.literal('warn'), v.literal('critical')),
+          severity: v.union(
+            v.literal('info'),
+            v.literal('warn'),
+            v.literal('critical'),
+          ),
           file: v.string(),
           line: v.number(),
           message: v.string(),
@@ -387,6 +450,79 @@ const embeddingSkillMap = defineTable({
   skillId: v.id('skills'),
 }).index('by_embedding', ['embeddingId'])
 
+// Lightweight projection of skill docs for search hydration (~800 bytes vs ~3-5KB).
+// Contains exactly the fields needed by toPublicSkill() + isPublicSkillDoc() + isSkillSuspicious().
+const skillSearchDigest = defineTable({
+  skillId: v.id('skills'),
+  slug: v.string(),
+  displayName: v.string(),
+  summary: v.optional(v.string()),
+  ownerUserId: v.id('users'),
+  ownerHandle: v.optional(v.string()),
+  ownerName: v.optional(v.string()),
+  ownerDisplayName: v.optional(v.string()),
+  ownerImage: v.optional(v.string()),
+  canonicalSkillId: v.optional(v.id('skills')),
+  forkOf: forkOfValidator,
+  latestVersionId: v.optional(v.id('skillVersions')),
+  latestVersionSummary: v.optional(
+    v.object({
+      version: v.string(),
+      createdAt: v.number(),
+      changelog: v.string(),
+      changelogSource: v.optional(
+        v.union(v.literal('auto'), v.literal('user')),
+      ),
+      clawdis: v.optional(v.any()),
+    }),
+  ),
+  tags: v.record(v.string(), v.id('skillVersions')),
+  badges: badgesValidator,
+  stats: statsValidator,
+  statsDownloads: v.optional(v.number()),
+  statsStars: v.optional(v.number()),
+  statsInstallsCurrent: v.optional(v.number()),
+  statsInstallsAllTime: v.optional(v.number()),
+  softDeletedAt: v.optional(v.number()),
+  moderationStatus: moderationStatusValidator,
+  moderationFlags: v.optional(v.array(v.string())),
+  moderationReason: v.optional(v.string()),
+  isSuspicious: v.optional(v.boolean()),
+  createdAt: v.number(),
+  updatedAt: v.number(),
+})
+  .index('by_skill', ['skillId'])
+  .index('by_active_updated', ['softDeletedAt', 'updatedAt'])
+  .index('by_active_created', ['softDeletedAt', 'createdAt'])
+  .index('by_active_name', ['softDeletedAt', 'displayName'])
+  .index('by_active_stats_downloads', [
+    'softDeletedAt',
+    'statsDownloads',
+    'updatedAt',
+  ])
+  .index('by_active_stats_stars', ['softDeletedAt', 'statsStars', 'updatedAt'])
+  .index('by_active_stats_installs_all_time', [
+    'softDeletedAt',
+    'statsInstallsAllTime',
+    'updatedAt',
+  ])
+  .index('by_nonsuspicious_updated', ['softDeletedAt', 'isSuspicious', 'updatedAt'])
+  .index('by_nonsuspicious_created', ['softDeletedAt', 'isSuspicious', 'createdAt'])
+  .index('by_nonsuspicious_name', ['softDeletedAt', 'isSuspicious', 'displayName'])
+  .index('by_nonsuspicious_downloads', [
+    'softDeletedAt',
+    'isSuspicious',
+    'statsDownloads',
+    'updatedAt',
+  ])
+  .index('by_nonsuspicious_stars', ['softDeletedAt', 'isSuspicious', 'statsStars', 'updatedAt'])
+  .index('by_nonsuspicious_installs', [
+    'softDeletedAt',
+    'isSuspicious',
+    'statsInstallsAllTime',
+    'updatedAt',
+  ])
+
 const skillDailyStats = defineTable({
   skillId: v.id('skills'),
   day: v.number(),
@@ -481,9 +617,15 @@ const comments = defineTable({
   reportCount: v.optional(v.number()),
   lastReportedAt: v.optional(v.number()),
   scamScanVerdict: v.optional(
-    v.union(v.literal('not_scam'), v.literal('likely_scam'), v.literal('certain_scam')),
+    v.union(
+      v.literal('not_scam'),
+      v.literal('likely_scam'),
+      v.literal('certain_scam'),
+    ),
   ),
-  scamScanConfidence: v.optional(v.union(v.literal('low'), v.literal('medium'), v.literal('high'))),
+  scamScanConfidence: v.optional(
+    v.union(v.literal('low'), v.literal('medium'), v.literal('high')),
+  ),
   scamScanExplanation: v.optional(v.string()),
   scamScanEvidence: v.optional(v.array(v.string())),
   scamScanModel: v.optional(v.string()),
@@ -560,9 +702,14 @@ const auditLogs = defineTable({
 })
   .index('by_actor', ['actorUserId'])
   .index('by_target', ['targetType', 'targetId'])
+  .index('by_target_createdAt', ['targetType', 'targetId', 'createdAt'])
 
 const vtScanLogs = defineTable({
-  type: v.union(v.literal('daily_rescan'), v.literal('backfill'), v.literal('pending_poll')),
+  type: v.union(
+    v.literal('daily_rescan'),
+    v.literal('backfill'),
+    v.literal('pending_poll'),
+  ),
   total: v.number(),
   updated: v.number(),
   unchanged: v.number(),
@@ -695,6 +842,7 @@ export default defineSchema({
   ...authTables,
   users,
   skills,
+  skillSlugAliases,
   souls,
   skillVersions,
   soulVersions,
@@ -703,6 +851,7 @@ export default defineSchema({
   soulVersionFingerprints,
   skillEmbeddings,
   embeddingSkillMap,
+  skillSearchDigest,
   soulEmbeddings,
   skillDailyStats,
   skillLeaderboards,

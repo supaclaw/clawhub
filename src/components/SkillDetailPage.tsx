@@ -10,6 +10,7 @@ import { useAuthStatus } from '../lib/useAuthStatus'
 import { SkillCommentsPanel } from './SkillCommentsPanel'
 import { SkillDetailTabs } from './SkillDetailTabs'
 import { SkillHeader, type SkillModerationInfo } from './SkillHeader'
+import { SkillOwnershipPanel } from './SkillOwnershipPanel'
 import { SkillReportDialog } from './SkillReportDialog'
 import {
   buildSkillHref,
@@ -26,6 +27,8 @@ type SkillDetailPageProps = {
 }
 
 type SkillBySlugResult = {
+  requestedSlug?: string | null
+  resolvedSlug?: string | null
   skill: Doc<'skills'> | PublicSkill
   latestVersion: Doc<'skillVersions'> | null
   owner: Doc<'users'> | PublicUser | null
@@ -108,8 +111,8 @@ export function SkillDetailPage({
 
   const isLoadingSkill = result === undefined
   const skill = result?.skill
-  const owner = result?.owner
-  const latestVersion = result?.latestVersion
+  const owner = result?.owner ?? null
+  const latestVersion = result?.latestVersion ?? null
 
   const versions = useQuery(
     api.skills.listVersions,
@@ -127,18 +130,30 @@ export function SkillDetailPage({
   )
 
   const canManage = canManageSkill(me, skill)
+  const isOwner = Boolean(me && skill && me._id === skill.ownerUserId)
+  const ownedSkills = useQuery(
+    api.skills.list,
+    isOwner && skill ? { ownerUserId: skill.ownerUserId, limit: 100 } : 'skip',
+  ) as Array<{ _id: Id<'skills'>; slug: string; displayName: string }> | undefined
 
   const ownerHandle = owner?.handle ?? owner?.name ?? null
   const ownerParam = ownerHandle ?? (owner?._id ? String(owner._id) : null)
   const wantsCanonicalRedirect = Boolean(
     ownerParam &&
-      (redirectToCanonical ||
+      ((result?.resolvedSlug && result.resolvedSlug !== slug) ||
+        redirectToCanonical ||
         (typeof canonicalOwner === 'string' && canonicalOwner && canonicalOwner !== ownerParam)),
   )
 
   const forkOf = result?.forkOf ?? null
   const canonical = result?.canonical ?? null
   const modInfo = result?.moderationInfo ?? null
+  const suppressVersionScanResults =
+    !isStaff && Boolean(modInfo?.overrideActive) && !modInfo?.isMalwareBlocked && !modInfo?.isSuspicious
+  const scanResultsSuppressedMessage =
+    suppressVersionScanResults
+      ? 'Security findings on these releases were reviewed by staff and cleared for public use.'
+      : null
   const forkOfLabel = forkOf?.kind === 'duplicate' ? 'duplicate of' : 'fork of'
   const forkOfOwnerHandle = forkOf?.owner?.handle ?? null
   const forkOfOwnerId = forkOf?.owner?.userId ?? null
@@ -344,6 +359,16 @@ export function SkillDetailPage({
           osLabels={osLabels}
         />
 
+        {isOwner && skill ? (
+          <SkillOwnershipPanel
+            skillId={skill._id}
+            slug={skill.slug}
+            ownerHandle={ownerHandle}
+            ownerId={owner?._id ?? null}
+            ownedSkills={(ownedSkills ?? []).filter((entry) => entry._id !== skill._id)}
+          />
+        ) : null}
+
         {nixSnippet ? (
           <div className="card">
             <h2 className="section-title" style={{ fontSize: '1.2rem', margin: 0 }}>
@@ -384,6 +409,8 @@ export function SkillDetailPage({
           diffVersions={diffVersions}
           versions={versions}
           nixPlugin={Boolean(nixPlugin)}
+          suppressVersionScanResults={suppressVersionScanResults}
+          scanResultsSuppressedMessage={scanResultsSuppressedMessage}
         />
 
         <SkillCommentsPanel skillId={skill._id} isAuthenticated={isAuthenticated} me={me ?? null} />
