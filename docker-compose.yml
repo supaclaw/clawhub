@@ -6,7 +6,10 @@ services:
     ports:
       - "3000:3000"
     volumes:
-      - ./storage:/storage
+      # Local demo skills live under ./storage/skills on the Ubuntu host.
+      - type: bind
+        source: ./storage
+        target: /storage
     environment:
       VITE_SITE_URL: http://localhost:3000
       SITE_URL: http://localhost:3000
