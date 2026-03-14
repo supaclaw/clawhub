@@ -27,10 +27,20 @@ RUN bun install --frozen-lockfile || bun install
 
 COPY . .
 
-RUN bun run build
+# Local-only container defaults so the app can build and boot without
+# external Convex/SoulHub deployment configuration.
+ENV NODE_ENV=production \
+  VITE_SITE_URL=http://localhost:3000 \
+  SITE_URL=http://localhost:3000 \
+  VITE_SITE_MODE=skills \
+  VITE_SOULHUB_SITE_URL=http://localhost:3000 \
+  VITE_SOULHUB_HOST=localhost \
+  VITE_CONVEX_SITE_URL=http://localhost:3000 \
+  CONVEX_SITE_URL=http://localhost:3000 \
+  VITE_CONVEX_URL=http://127.0.0.1:3210
 
-ENV NODE_ENV=production
+RUN bun run build
 
 EXPOSE 3000
 
-CMD ["bun", "run", "preview"]
+CMD ["bun", "run", "preview", "--host", "0.0.0.0", "--port", "3000"]
